@@ -1,0 +1,178 @@
+{
+  "questions_total": 10,
+  "questions_loaded": 10,
+  "modes": {
+    "bm25": {
+      "recall_at_1": 0.9,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "rows": [
+        {
+          "question": "Кто снял фильм Побег из Шоушенка?",
+          "expected_movie_id": 278,
+          "rank": 1
+        },
+        {
+          "question": "Кто режиссёр Крестного отца?",
+          "expected_movie_id": 238,
+          "rank": 5
+        },
+        {
+          "question": "Кто снимался в Темном рыцаре?",
+          "expected_movie_id": 155,
+          "rank": 1
+        },
+        {
+          "question": "Как снимали Интерстеллар?",
+          "expected_movie_id": 157336,
+          "rank": 1
+        },
+        {
+          "question": "Кто написал музыку для фильма Начало?",
+          "expected_movie_id": 27205,
+          "rank": 1
+        },
+        {
+          "question": "О чем фильм Паразиты?",
+          "expected_movie_id": 496243,
+          "rank": 1
+        },
+        {
+          "question": "История создания Криминального чтива",
+          "expected_movie_id": 680,
+          "rank": 1
+        },
+        {
+          "question": "Какие актеры сыграли во Властелине колец: Возвращение короля?",
+          "expected_movie_id": 122,
+          "rank": 1
+        },
+        {
+          "question": "Кто режиссер Списка Шиндлера?",
+          "expected_movie_id": 424,
+          "rank": 1
+        },
+        {
+          "question": "Чем известен фильм 12 разгневанных мужчин?",
+          "expected_movie_id": 389,
+          "rank": 1
+        }
+      ]
+    },
+    "semantic": {
+      "recall_at_1": 0.5,
+      "recall_at_5": 0.6,
+      "recall_at_10": 0.7,
+      "rows": [
+        {
+          "question": "Кто снял фильм Побег из Шоушенка?",
+          "expected_movie_id": 278,
+          "rank": null
+        },
+        {
+          "question": "Кто режиссёр Крестного отца?",
+          "expected_movie_id": 238,
+          "rank": null
+        },
+        {
+          "question": "Кто снимался в Темном рыцаре?",
+          "expected_movie_id": 155,
+          "rank": 1
+        },
+        {
+          "question": "Как снимали Интерстеллар?",
+          "expected_movie_id": 157336,
+          "rank": 1
+        },
+        {
+          "question": "Кто написал музыку для фильма Начало?",
+          "expected_movie_id": 27205,
+          "rank": 4
+        },
+        {
+          "question": "О чем фильм Паразиты?",
+          "expected_movie_id": 496243,
+          "rank": 1
+        },
+        {
+          "question": "История создания Криминального чтива",
+          "expected_movie_id": 680,
+          "rank": null
+        },
+        {
+          "question": "Какие актеры сыграли во Властелине колец: Возвращение короля?",
+          "expected_movie_id": 122,
+          "rank": 1
+        },
+        {
+          "question": "Кто режиссер Списка Шиндлера?",
+          "expected_movie_id": 424,
+          "rank": 10
+        },
+        {
+          "question": "Чем известен фильм 12 разгневанных мужчин?",
+          "expected_movie_id": 389,
+          "rank": 1
+        }
+      ]
+    },
+    "hybrid": {
+      "recall_at_1": 0.5,
+      "recall_at_5": 0.9,
+      "recall_at_10": 1.0,
+      "rows": [
+        {
+          "question": "Кто снял фильм Побег из Шоушенка?",
+          "expected_movie_id": 278,
+          "rank": 2
+        },
+        {
+          "question": "Кто режиссёр Крестного отца?",
+          "expected_movie_id": 238,
+          "rank": 6
+        },
+        {
+          "question": "Кто снимался в Темном рыцаре?",
+          "expected_movie_id": 155,
+          "rank": 3
+        },
+        {
+          "question": "Как снимали Интерстеллар?",
+          "expected_movie_id": 157336,
+          "rank": 1
+        },
+        {
+          "question": "Кто написал музыку для фильма Начало?",
+          "expected_movie_id": 27205,
+          "rank": 1
+        },
+        {
+          "question": "О чем фильм Паразиты?",
+          "expected_movie_id": 496243,
+          "rank": 3
+        },
+        {
+          "question": "История создания Криминального чтива",
+          "expected_movie_id": 680,
+          "rank": 3
+        },
+        {
+          "question": "Какие актеры сыграли во Властелине колец: Возвращение короля?",
+          "expected_movie_id": 122,
+          "rank": 1
+        },
+        {
+          "question": "Кто режиссер Списка Шиндлера?",
+          "expected_movie_id": 424,
+          "rank": 1
+        },
+        {
+          "question": "Чем известен фильм 12 разгневанных мужчин?",
+          "expected_movie_id": 389,
+          "rank": 1
+        }
+      ]
+    }
+  },
+  "semantic_error": null
+}

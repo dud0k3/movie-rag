@@ -1,0 +1,31 @@
+[project]
+name = "movie-rag"
+version = "0.1.0"
+description = "Source-backed movie question answering with lexical and semantic search"
+requires-python = ">=3.11"
+dependencies = [
+  "beautifulsoup4>=4.12",
+  "fastapi>=0.115",
+  "httpx>=0.27",
+  "numpy>=1.26",
+  "python-dotenv>=1.0",
+  "requests>=2.31",
+  "sentence-transformers>=3.0",
+  "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+faiss = ["faiss-cpu>=1.9"]
+
+[project.scripts]
+movie-rag = "movie_rag.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["movie_rag*"]
+
+[tool.setuptools.package-data]
+movie_rag = ["static/*"]
