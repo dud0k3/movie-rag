@@ -1,10 +1,13 @@
 .env
 .venv/
 __pycache__/
+*.egg-info/
 *.py[cod]
 .pytest_cache/
 data/
 models/
 *.mp4
 *.mov
+demo/*
+!demo/movie-rag-demo.mp4
 .DS_Store

@@ -89,6 +89,10 @@ python -m evaluation.evaluate
 
 На начальном каталоге из 100 фильмов и 10 контрольных вопросов: BM25 дал Recall@5 = 1.0, гибридный поиск — Recall@5 = 0.9 и Recall@10 = 1.0. Числа зависят от наполнения TMDB/Wikipedia и сохранены в `evaluation/results.json`.
 
+## Демо-видео
+
+Готовая [видеодемонстрация](demo/movie-rag-demo.mp4) показывает поиск «Интерстеллара», выбор фильма, вопрос, русский ответ Qwen и ссылки на источники. При запущенном сервере её можно перезаписать командой `python scripts/record_demo.py`. Для этого дополнительно нужны `pip install playwright`, `python -m playwright install ffmpeg`, Chromium (`python -m playwright install chromium`) и системная утилита `ffmpeg`. На macOS можно использовать установленный Яндекс Браузер без отдельной загрузки Chromium: `DEMO_CHROME=/Applications/Yandex.app/Contents/MacOS/Yandex python scripts/record_demo.py`.
+
 ## Ограничения
 
 - Статьи Wikipedia и поля TMDB заполнены не для каждого фильма и человека. При отсутствии русскоязычных материалов резервная выжимка сообщает о нехватке данных; Qwen может использовать и перевести английский источник.

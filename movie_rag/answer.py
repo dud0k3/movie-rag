@@ -33,12 +33,18 @@ def extractive_answer(query: str, hits: list[dict]) -> str:
             lower = sentence.lower()
             overlap = len(terms & set(re.findall(r"\w+", lower)))
             score = overlap * 4 + float(hit["score"]) * 100 - index * 0.03
-            if wants_creators and ("режиссёр:" in lower or "режиссёра" in lower or "режиссер" in lower):
-                score += 22
+            if wants_creators and "режиссёр:" in lower:
+                score += 25
+            elif wants_creators and any(label in lower for label in ("фильм режиссёра", "фильма режиссёра", "режиссёром фильма", "режиссером фильма")):
+                score += 18
+            elif wants_creators and ("режиссёр" in lower or "режиссер" in lower):
+                score += 3
             elif wants_creators and any(label in lower for label in ("сценаристы:", "композитор:")):
                 score += 10
             if wants_creators and "оператор" in lower:
                 score -= 12
+            if "снимался во всех фильмах" in lower or "мог сыграть" in lower:
+                score -= 8
             if wants_production and any(word in lower for word in ("production", "filmed", "filming", "shooting", "screenplay", "script")):
                 score += 8
             if wants_production and any(word in lower for word in ("снимал", "снял", "съём", "съем", "сценари", "производств")):
@@ -75,7 +81,8 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
     system = (
         "Ты помощник по истории кино. Отвечай только на русском языке, даже если источник на английском. "
         "Опирайся только на предоставленные источники. Не цитируй английские предложения без перевода. "
-        "После каждого фактического утверждения указывай номер источника в квадратных скобках, например [1]. "
+        "После каждого фактического утверждения обязательно указывай номер источника в квадратных скобках. "
+        "Например: «Режиссёр фильма — Кристофер Нолан [1].» Ответ без маркеров [1], [2] и т. п. недопустим. "
         "Если данных о факте, человеке, съёмках или фильме нет, прямо скажи, что сведения не найдены. "
         "Не придумывай факты и не приписывай людям работы без подтверждения. "
         "Отделяй сюжет фильма от истории его создания. Пиши кратко и ясно."
@@ -87,9 +94,10 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
                 "model": config.ollama_model,
                 "messages": [
                     {"role": "system", "content": system},
-                    {"role": "user", "content": f"Вопрос: {query}\n\nИсточники:\n{context}"},
+                    {"role": "user", "content": f"Вопрос: {query}\n\nИсточники:\n{context}\n\nОтветь по-русски; укажи [номер] после каждого факта."},
                 ],
                 "stream": False,
+                "think": False,
                 "options": {"temperature": 0.2, "num_ctx": 8192, "num_predict": 650},
             }, timeout=180,
         )
