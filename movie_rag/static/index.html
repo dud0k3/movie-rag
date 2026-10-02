@@ -3,52 +3,72 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Киноархив — ответы с источниками</title>
+  <meta name="theme-color" content="#f4f6f8">
+  <title>Киноархив</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <div class="shell">
     <header class="topbar">
-      <div class="brand"><span class="brand-mark">✦</span><span>Киноархив</span></div>
-      <div class="top-meta"><span id="catalog-status">Загрузка каталога…</span><span class="dot"></span><span>Ответы с источниками</span></div>
+      <a class="brand" href="/" aria-label="Киноархив — на главную">Киноархив</a>
     </header>
+
     <main>
-      <section class="hero">
-        <p class="eyebrow">ПОИСК ПО ИСТОРИИ КИНО</p>
-        <h1>У каждой истории<br><em>есть источник.</em></h1>
-        <p class="lead">Узнайте о фильме, режиссёре или актёре. Мы найдём сведения, сверим их с источниками и покажем, откуда взят ответ.</p>
-      </section>
-      <section class="workspace">
+      <section class="workspace" aria-label="Поиск по киноархиву">
         <div class="main-column">
-          <div class="panel picker-panel">
-            <div class="panel-heading"><span class="step">01</span><div><h2>Выберите фильм или человека</h2><p>Можно найти нового героя и добавить его в каталог.</p></div></div>
-            <div class="search-row">
-              <input id="discover-input" type="search" autocomplete="off" placeholder="Например, Интерстеллар или Кристофер Нолан" aria-label="Поиск фильма или человека">
-              <button id="discover-button" class="button button-ghost">Найти</button>
+          <div class="query-panel">
+            <div class="field">
+              <label class="sr-only" for="discover-input">Фильм или человек</label>
+              <div class="search-row">
+                <input id="discover-input" type="search" autocomplete="off" placeholder="Найти фильм или человека" aria-label="Поиск фильма или человека">
+                <button id="discover-button" class="button button-secondary" type="button">Найти</button>
+              </div>
+              <div id="discover-results" class="discover-results" aria-live="polite"></div>
+              <div id="selected" class="selected hidden"></div>
             </div>
-            <div id="discover-results" class="discover-results"></div>
-            <div id="selected" class="selected hidden"></div>
-          </div>
-          <div class="panel ask-panel">
-            <div class="panel-heading"><span class="step">02</span><div><h2>Задайте вопрос</h2><p>Например, о создателях, съёмках или карьере.</p></div></div>
-            <textarea id="question" rows="3" placeholder="Кто снял фильм и что известно о его создании?" aria-label="Вопрос"></textarea>
-            <div class="toolbar"><select id="search-mode" aria-label="Метод поиска"><option value="hybrid">BM25 + смысл</option><option value="bm25">Только BM25</option><option value="semantic">Только по смыслу</option></select><button id="ask-button" class="button button-primary">Получить ответ <span>↗</span></button></div>
+
+            <div class="field question-field">
+              <label class="sr-only" for="question">Вопрос</label>
+              <textarea id="question" rows="2" placeholder="Спросите о фильме или человеке…" aria-label="Вопрос"></textarea>
+            </div>
+
+            <div class="toolbar">
+              <details class="advanced">
+                <summary>Метод</summary>
+                <div class="advanced-content">
+                  <label for="search-mode">Метод поиска</label>
+                  <select id="search-mode" aria-label="Метод поиска">
+                    <option value="hybrid">BM25 + поиск по смыслу</option>
+                    <option value="bm25">Только BM25</option>
+                    <option value="semantic">Только по смыслу</option>
+                  </select>
+                </div>
+              </details>
+              <button id="ask-button" class="button button-primary" type="button">Спросить <span aria-hidden="true">→</span></button>
+            </div>
             <p id="status" class="status" role="status"></p>
           </div>
-          <div id="answer-panel" class="panel answer-panel hidden">
-            <div class="answer-top"><div><span class="eyebrow">ОТВЕТ</span><h2 id="answer-title">Что удалось найти</h2></div><span id="answer-mode" class="mode-pill"></span></div>
+
+          <section id="answer-panel" class="answer-panel hidden" aria-labelledby="answer-title">
+            <div class="answer-header">
+              <h2 id="answer-title">Ответ</h2>
+              <span id="answer-mode" class="mode-pill sr-only"></span>
+            </div>
             <div id="answer-text" class="answer-text"></div>
-          </div>
-          <div class="examples"><span>Попробуйте спросить:</span><button data-question="Кто режиссёр и сценаристы этого фильма?">Создатели фильма</button><button data-question="Что известно об истории создания и съёмках?">История съёмок</button><button data-question="Какие известные фильмы снял этот режиссёр?">Фильмография</button></div>
+          </section>
         </div>
-        <aside class="sources-column">
-          <div class="sources-header"><span class="eyebrow">ПРОВЕРЯЕМЫЕ ФАКТЫ</span><h2>Источники</h2><p>Откройте материал, чтобы проверить ответ.</p></div>
-          <div id="sources" class="sources-list"><div class="empty-sources"><span>↗</span><p>После ответа здесь появятся ссылки на использованные материалы.</p></div></div>
-          <div class="source-note"><strong>Как это работает</strong><p>Система сначала ищет подходящие фрагменты, затем составляет ответ только на их основе.</p></div>
+
+        <aside id="sources-column" class="sources-column hidden" aria-label="Источники ответа">
+          <div class="sources-header"><h2>Источники</h2><span id="source-count" class="source-count"></span></div>
+          <div id="sources" class="sources-list"></div>
         </aside>
       </section>
     </main>
-    <footer><span>Учебный проект · Movie RAG</span><span>Данные о фильмах: <a href="https://www.themoviedb.org/" target="_blank" rel="noopener">TMDB</a> · Статьи: <a href="https://en.wikipedia.org/" target="_blank" rel="noopener">Wikipedia</a></span><small>This product uses the TMDB API but is not endorsed or certified by TMDB.</small></footer>
+
+    <footer>
+      <span>Данные: <a href="https://www.themoviedb.org/" target="_blank" rel="noopener noreferrer">TMDB</a> и <a href="https://ru.wikipedia.org/" target="_blank" rel="noopener noreferrer">Wikipedia</a></span>
+      <small>This product uses the TMDB API but is not endorsed or certified by TMDB.</small>
+    </footer>
   </div>
   <script src="/static/app.js"></script>
 </body>
