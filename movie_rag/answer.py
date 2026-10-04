@@ -15,6 +15,53 @@ PLOT_QUESTION = re.compile(
     r"концовк|финал|чем законч|умер|погиб|убил|спрыг|персонаж|героин|геро[йя]",
     re.IGNORECASE,
 )
+QUESTION_FILLER = STOPWORDS | {
+    "почему", "зачем", "спрыгнула", "спрыгнул", "сюжет", "персонаж", "герой", "героиня",
+    "расскажи", "объясни", "происходит", "произошло", "случилось", "такой", "такая",
+    "такое", "фильм", "сериал", "конце", "финал", "концовка",
+}
+
+
+def plot_evidence(query: str, numbered_hits: list[tuple[int, dict]]) -> str | None:
+    """Reduce retrieved plot chunks to atomic, source-backed statements."""
+    query_tokens = [
+        token for token in re.findall(r"[a-zа-яё]{3,}", query.lower())
+        if token not in QUESTION_FILLER
+    ]
+    if not query_tokens:
+        return None
+    facts: list[tuple[int, int, str]] = []
+    for source_number, hit in numbered_hits:
+        parts = re.split(r"(?<=[.!?])\s+|\s*\|\s*", hit.get("text", ""))
+        matched = []
+        for index, part in enumerate(parts):
+            words = re.findall(r"[a-zа-яё]+", part.lower())
+            if any(token == word or token.startswith(word[:4]) or word.startswith(token[:4])
+                   for token in query_tokens for word in words if len(word) >= 4):
+                matched.append(index)
+        keep = {neighbor for index in matched for neighbor in (index - 1, index, index + 1)
+                if 0 <= neighbor < len(parts)}
+        source_facts = []
+        for index in sorted(keep):
+            fact = " ".join(parts[index].split()).strip(" -|\t")
+            if len(fact) >= 35 and not fact[:1].isdigit():
+                source_facts.append((source_number, index, fact))
+        # Give each retrieved plot passage room; otherwise the first long
+        # chunk can crowd out the ending or the reason asked about.
+        facts.extend(source_facts[:10])
+    if not facts:
+        return None
+    seen = set()
+    lines = []
+    for source_number, _, fact in facts:
+        key = re.sub(r"\W+", "", fact.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(f"[{source_number}] {fact}")
+        if len(lines) >= 24:
+            break
+    return "Факты сюжета из источников. Сохраняй, кто именно совершает каждое действие:\n" + "\n".join(lines)
 
 
 def character_fact(query: str, hits: list[dict]) -> str | None:
@@ -111,7 +158,8 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
         numbered_context = preferred[:4]
     else:
         numbered_context = numbered_hits[:4]
-    context = "\n\n".join(
+    evidence = plot_evidence(query, numbered_context) if PLOT_QUESTION.search(query) else None
+    context = evidence or "\n\n".join(
         f"[{index}] Источник: {hit['title']} ({hit['url']})\n{hit['text'][:4200]}"
         for index, hit in numbered_context
     )
@@ -121,9 +169,11 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
         "Если источники не раскрывают нужную деталь, можешь осторожно дополнить ответ своими знаниями, но обозначь неуверенность. "
         "Не додумывай мотивы, угрозы, принадлежность героя к группировке и другие факты, которых нет в тексте источника. "
         "Если принадлежность или причина поступка не названа прямо, не приписывай её персонажу. Точно сохраняй родство, отношения и последовательность событий. "
+        "Сохраняй точного действующего персонажа: не меняй местами, кто напал, спас, убил или сказал. "
         "Не превращай угрозу исключения из группировки в угрозу убийством. Не цитируй английские предложения без перевода. "
         "Ставь ссылку [номер] рядом с фактами, подтверждёнными источником; не приписывай источнику то, чего в нём нет. "
-        "Сначала ответь прямо. На вопрос о сюжете дай содержательное объяснение причин и последовательности событий, обычно 5–8 предложений, "
+        "Сначала ответь прямо; если спрашивают, кто персонаж, в первом предложении назови его роль или связь с героями по источнику. "
+        "На вопрос о сюжете дай содержательное объяснение причин и последовательности событий, обычно 5–8 предложений, "
         "сохраняя важные детали и предупреждая о спойлерах, если раскрываешь развязку. На простой вопрос отвечай короче. "
         "Не смешивай персонажей и сюжетные линии. Не добавляй сведения о создании фильма, если об этом не спросили. "
         "Перед отправкой проверь, что каждое предложение подтверждается источниками и не противоречит им. "
@@ -151,6 +201,36 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
         allowed_citations = {index for index, _ in numbered_context}
         if not cited or any(value not in allowed_citations for value in cited):
             raise ValueError("Ollama returned an answer without valid source markers")
+        if evidence:
+            # A second, short grounding pass catches role swaps and invented
+            # relationships that a small local model can add while narrating.
+            review = httpx.post(
+                f"{config.ollama_url.rstrip('/')}/api/chat",
+                json={
+                    "model": config.ollama_model,
+                    "messages": [
+                        {"role": "system", "content": (
+                            "Ты редактор-верификатор ответов о сюжете. Сверь черновик с фактами. "
+                            "Исправь неверные роли, причины и неподтверждённые утверждения. "
+                            "Не выводи принадлежность героя к группировке из того, что он общается с её членами "
+                            "или стал жертвой её нападения. Не меняй персонажа, совершившего действие. "
+                            "Не приписывай персонажам мысли, чувства, вину или мотивы, если это прямо не сказано. "
+                            "Если факт не подтверждается списком, удали его. Пиши по-русски, естественно и содержательно. "
+                            "Ставь ссылку [номер] после каждого предложения с фактами. "
+                            "Сохрани ссылки [номер] у подтверждённых фактов. Выведи только исправленный ответ."
+                        )},
+                        {"role": "user", "content": f"{context}\n\nЧерновик:\n{answer}"},
+                    ],
+                    "stream": False,
+                    "think": False,
+                    "options": {"temperature": 0.05, "num_ctx": 8192, "num_predict": 450},
+                }, timeout=90,
+            )
+            review.raise_for_status()
+            reviewed = review.json().get("message", {}).get("content", "").strip()
+            review_citations = [int(value) for value in re.findall(r"\[(\d+)\]", reviewed)]
+            if reviewed and review_citations and all(value in allowed_citations for value in review_citations):
+                answer = reviewed
         return answer, "qwen"
     except (httpx.HTTPError, ValueError):
         return extractive_answer(query, hits), "extractive"
