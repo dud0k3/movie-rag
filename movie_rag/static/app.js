@@ -25,7 +25,7 @@ async function discover() {
     const results = data.results.slice(0, 6);
     $('discover-results').innerHTML = results.length ? results.map((item, index) => `
       <button class="discovery-item" data-index="${index}">
-        <span><strong>${escapeHtml(item.title)}</strong><small>${item.type === 'movie' ? 'Фильм' : 'Человек'}${item.year ? ' · ' + escapeHtml(item.year) : ''}</small></span>
+        <span><strong>${escapeHtml(item.title)}</strong><small>${item.type === 'movie' ? 'Фильм' : item.type === 'tv' ? 'Сериал' : 'Человек'}${item.year ? ' · ' + escapeHtml(item.year) : ''}</small></span>
         <span class="item-arrow" aria-hidden="true">→</span>
       </button>`).join('') : '<p class="muted">Ничего не найдено. Попробуйте оригинальное название.</p>';
     document.querySelectorAll('.discovery-item').forEach(button => button.addEventListener('click', () => select(results[Number(button.dataset.index)])));
@@ -38,12 +38,13 @@ async function select(item) {
   state.selected = item;
   $('discover-results').innerHTML = '';
   $('selected').classList.remove('hidden');
-  $('selected').innerHTML = `<span>${item.type === 'movie' ? 'Фильм' : 'Человек'}: ${escapeHtml(item.title)}</span><button id="clear-selected" aria-label="Сбросить выбор">×</button>`;
+  const typeLabel = item.type === 'movie' ? 'Фильм' : item.type === 'tv' ? 'Сериал' : 'Человек';
+  $('selected').innerHTML = `<span>${typeLabel}: ${escapeHtml(item.title)}</span><button id="clear-selected" aria-label="Сбросить выбор">×</button>`;
   $('clear-selected').addEventListener('click', () => { state.selected = null; $('selected').classList.add('hidden'); });
   $('answer-panel').classList.add('hidden');
   $('sources-column').classList.add('hidden');
   document.querySelector('.workspace').classList.remove('has-answer');
-  $('question').placeholder = item.type === 'movie' ? `Что известно о создании фильма «${item.title}»?` : `Какие фильмы связаны с ${item.title}?`;
+  $('question').placeholder = item.type === 'movie' ? `Что известно о создании фильма «${item.title}»?` : item.type === 'tv' ? `Спросите о сериале «${item.title}» или его героях` : `Спросите о человеке ${item.title}`;
   setStatus('Загружаем материалы. Первый запрос может занять немного времени…');
   try {
     await getJSON('/ingest', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({type:item.type,id:item.id}) });
@@ -100,7 +101,7 @@ async function ask() {
     $('sources-column').classList.remove('hidden');
     document.querySelector('.workspace').classList.add('has-answer');
     $('answer-title').textContent = 'Ответ';
-    $('answer-mode').textContent = data.answer_mode === 'qwen' ? 'Qwen · локальная модель' : 'Выжимка из источников';
+    $('answer-mode').textContent = data.answer_mode === 'qwen' ? 'Qwen · локальная модель' : data.answer_mode === 'structured' ? 'Ответ по данным сериала' : 'Выжимка из источников';
     const sources = uniqueSources(data.sources);
     renderAnswer(data.answer, sources.citations);
     renderSources(sources.list);

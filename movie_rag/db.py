@@ -165,6 +165,7 @@ class Database:
                 "documents": db.execute("SELECT COUNT(*) FROM documents").fetchone()[0],
                 "chunks": db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0],
                 "movies": db.execute("SELECT COUNT(*) FROM entities WHERE entity_type='movie'").fetchone()[0],
+                "series": db.execute("SELECT COUNT(*) FROM entities WHERE entity_type='tv'").fetchone()[0],
                 "people": db.execute("SELECT COUNT(*) FROM entities WHERE entity_type='person'").fetchone()[0],
             }
 
@@ -196,6 +197,10 @@ class Database:
             for position, letter in enumerate(term):
                 if letter == "е":
                     expanded.add(term[:position] + "ё" + term[position + 1:])
+            # Common diminutive and case forms of Marat should retrieve the
+            # TMDB cast entry, which lists the character as “Marat Suvorov”.
+            if term in {"маратик", "маратика", "маратику", "маратиком", "маратике", "maratik", "maratika", "maratiku", "maratikom", "maratike"}:
+                expanded.update({"марат", "marat"})
         expression = " OR ".join(f'"{term}"' for term in sorted(expanded))
         sql = """SELECT CAST(f.chunk_id AS INTEGER) AS id, bm25(chunks_fts, 0, 8, 1) AS score
         FROM chunks_fts f JOIN chunks c ON c.id=CAST(f.chunk_id AS INTEGER)

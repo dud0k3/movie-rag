@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import re
 import threading
 
 import numpy as np
@@ -43,6 +44,7 @@ class SearchEngine:
                 self._index = None
                 return 0
             path = self.config.vector_path
+            reusable: dict[int, np.ndarray] = {}
             if not force and path.exists():
                 try:
                     with np.load(path) as saved:
@@ -53,14 +55,35 @@ class SearchEngine:
                             self._vectors = old_vectors
                             self._make_index()
                             return len(ids)
+                        if old_vectors.ndim == 2 and len(old_ids) == len(old_vectors):
+                            reusable = {int(ident): old_vectors[pos] for pos, ident in enumerate(old_ids)}
                 except (OSError, ValueError, KeyError):
                     pass
-            model = self._load_model()
-            embeddings = model.encode(
-                [row["text"] for row in rows], batch_size=16,
-                show_progress_bar=False, normalize_embeddings=True,
-            )
-            vectors = np.asarray(embeddings, dtype=np.float32)
+            vector_dim = next((vector.shape[0] for vector in reusable.values()), 0)
+            vectors = np.empty((len(ids), vector_dim), dtype=np.float32) if vector_dim else None
+            missing_positions = []
+            for pos, ident in enumerate(ids):
+                previous = reusable.get(int(ident))
+                if vectors is None or previous is None or previous.shape[0] != vector_dim:
+                    missing_positions.append(pos)
+                else:
+                    vectors[pos] = previous
+            if missing_positions:
+                model = self._load_model()
+                encoded = np.asarray(model.encode(
+                    [rows[pos]["text"] for pos in missing_positions], batch_size=16,
+                    show_progress_bar=False, normalize_embeddings=True,
+                ), dtype=np.float32)
+                if vectors is not None and vectors.shape[1] != encoded.shape[1]:
+                    encoded = np.asarray(model.encode(
+                        [row["text"] for row in rows], batch_size=16,
+                        show_progress_bar=False, normalize_embeddings=True,
+                    ), dtype=np.float32)
+                    vectors = encoded
+                else:
+                    if vectors is None:
+                        vectors = np.empty((len(ids), encoded.shape[1]), dtype=np.float32)
+                    vectors[missing_positions] = encoded
             path.parent.mkdir(parents=True, exist_ok=True)
             temp = path.with_suffix(".tmp.npz")
             np.savez_compressed(temp, ids=ids, vectors=vectors)
@@ -114,7 +137,11 @@ class SearchEngine:
         limit = max(1, min(limit, 30))
         candidates = max(30, limit * 5)
         lexical = self.db.bm25(query, candidates, entity) if mode in {"hybrid", "bm25"} else []
-        semantic = self.vector(query, candidates, entity) if mode in {"hybrid", "semantic"} else []
+        character_alias_query = bool(
+            entity and entity[0] == "tv"
+            and re.search(r"\b(?:маратик\w*|maratik\w*)\b", query.lower())
+        )
+        semantic = self.vector(query, candidates, entity) if mode == "semantic" or mode == "hybrid" and not character_alias_query else []
         ranks: dict[int, dict] = {}
         for rank, (ident, score) in enumerate(lexical, start=1):
             ranks.setdefault(ident, {"score": 0.0, "bm25_score": None, "semantic_score": None})

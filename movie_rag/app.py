@@ -44,7 +44,7 @@ def diverse_hits(hits: list[dict], limit: int = 6) -> list[dict]:
 
 
 class IngestRequest(BaseModel):
-    type: str = Field(pattern="^(movie|person)$")
+    type: str = Field(pattern="^(movie|tv|person)$")
     id: int = Field(gt=0)
     refresh: bool = False
 
@@ -63,7 +63,34 @@ def health():
 @app.get("/discover")
 def discover(q: str = Query(min_length=2, max_length=120)):
     try:
-        return {"query": q, "results": ingestor.tmdb.search(q)}
+        results = ingestor.tmdb.search(q)
+        if not results:
+            local_hits = db.bm25(q, limit=12)
+            details = db.chunk_details([ident for ident, _ in local_hits])
+            seen: set[tuple[str, str]] = set()
+            for ident, _ in local_hits:
+                hit = details.get(ident)
+                if not hit:
+                    continue
+                kind, entity_id = hit["entity_type"], hit["entity_id"]
+                key = (kind, entity_id)
+                if key in seen:
+                    continue
+                item = db.get_entity(kind, entity_id)
+                if not item:
+                    continue
+                seen.add(key)
+                title = item.get("title") or item.get("name") or str(entity_id)
+                results.append({
+                    "type": kind, "id": int(entity_id), "title": title,
+                    "original_title": item.get("original_title") or item.get("original_name") or title,
+                    "year": (item.get("release_date") or item.get("first_air_date") or "")[:4],
+                    "summary": item.get("overview_ru") or item.get("overview") or "",
+                    "poster_path": item.get("poster_path"),
+                })
+                if len(results) == 6:
+                    break
+        return {"query": q, "results": results}
     except SourceError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -80,7 +107,7 @@ def ingest(body: IngestRequest):
 def search(
     q: str = Query(min_length=2, max_length=500), top_n: int = Query(5, ge=1, le=30),
     mode: str = Query("hybrid", pattern="^(hybrid|bm25|semantic)$"),
-    entity_type: str | None = Query(None, pattern="^(movie|person)$"),
+    entity_type: str | None = Query(None, pattern="^(movie|tv|person)$"),
     entity_id: int | None = Query(None, gt=0),
 ):
     entity = (entity_type, str(entity_id)) if entity_type and entity_id else None
@@ -92,7 +119,7 @@ def search(
 @app.get("/ask")
 def ask(
     q: str = Query(min_length=2, max_length=500),
-    entity_type: str | None = Query(None, pattern="^(movie|person)$"),
+    entity_type: str | None = Query(None, pattern="^(movie|tv|person)$"),
     entity_id: int | None = Query(None, gt=0),
     mode: str = Query("hybrid", pattern="^(hybrid|bm25|semantic)$"),
 ):

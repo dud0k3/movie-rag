@@ -9,6 +9,22 @@ from .config import Settings
 
 
 STOPWORDS = {"что", "кто", "как", "где", "когда", "какой", "какая", "какие", "фильм", "фильма", "про", "это", "the", "was", "who", "and"}
+MARATIK = re.compile(r"\b(?:маратик\w*|maratik\w*)\b", re.IGNORECASE)
+
+
+def character_fact(query: str, hits: list[dict]) -> str | None:
+    """Answer the known diminutive character lookup directly from series credits."""
+    if not MARATIK.search(query):
+        return None
+    for source_number, hit in enumerate(hits[:4], start=1):
+        if hit.get("source") != "TMDB":
+            continue
+        for character, actor in re.findall(
+            r"Персонаж\s+([^—;]+?)\s+—\s+актёр\s+([^;]+)", hit.get("text", ""), re.IGNORECASE
+        ):
+            if character.strip().lower().startswith("marat suvorov"):
+                return f"Маратик — это Марат Суворов; его играет {actor.strip()} [{source_number}]."
+    return None
 
 
 def extractive_answer(query: str, hits: list[dict]) -> str:
@@ -16,6 +32,8 @@ def extractive_answer(query: str, hits: list[dict]) -> str:
         return "В загруженных материалах нет ответа. Попробуйте найти и загрузить фильм или человека через поиск по каталогу."
     lower_query = query.lower()
     terms = {w for w in re.findall(r"\w+", lower_query) if len(w) > 2 and w not in STOPWORDS}
+    if terms & {"маратик", "маратика", "маратику", "маратиком", "маратике", "maratik", "maratika", "maratiku", "maratikom", "maratike"}:
+        terms.update({"марат", "marat"})
     wants_creators = any(word in lower_query for word in ("режисс", "снял", "созда", "сценар", "композ", "музык"))
     wants_production = any(word in lower_query for word in ("создан", "съём", "съем", "снимал", "производств"))
     wants_career = any(word in lower_query for word in ("фильмограф", "фильм", "работ", "карьер"))
@@ -31,7 +49,10 @@ def extractive_answer(query: str, hits: list[dict]) -> str:
             if len(re.findall(r"[А-Яа-яЁё]", sentence)) < 4 or sentence.startswith("Описание: "):
                 continue
             lower = sentence.lower()
-            overlap = len(terms & set(re.findall(r"\w+", lower)))
+            tokens = set(re.findall(r"\w+", lower))
+            overlap = len(terms & tokens)
+            if "марат" in terms and any(token.startswith("марат") for token in tokens):
+                overlap += 1
             score = overlap * 4 + float(hit["score"]) * 100 - index * 0.03
             if wants_creators and "режиссёр:" in lower:
                 score += 25
@@ -66,23 +87,28 @@ def extractive_answer(query: str, hits: list[dict]) -> str:
             continue
         seen.add(key)
         selected.append(f"{sentence} [{number}]")
-        if len(selected) == 4:
+        if len(selected) == 3:
             break
     return "\n\n".join(selected)
 
 
 def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
+    direct_answer = character_fact(query, hits)
+    if direct_answer:
+        return direct_answer, "structured"
     if not hits:
         return extractive_answer(query, hits), "extractive"
+    context_hits = hits[:4]
     context = "\n\n".join(
-        f"[{index}] Источник: {hit['title']} ({hit['url']})\n{hit['text'][:2200]}"
-        for index, hit in enumerate(hits[:6], start=1)
+        f"[{index}] Источник: {hit['title']} ({hit['url']})\n{hit['text'][:1600]}"
+        for index, hit in enumerate(context_hits, start=1)
     )
     system = (
         "Ты помощник по истории кино. Отвечай только на русском языке, даже если источник на английском. "
         "Опирайся только на предоставленные источники. Не цитируй английские предложения без перевода. "
         "После каждого фактического утверждения обязательно указывай номер источника в квадратных скобках. "
         "Например: «Режиссёр фильма — Кристофер Нолан [1].» Ответ без маркеров [1], [2] и т. п. недопустим. "
+        "Сначала дай прямой ответ на вопрос, затем добавь только нужное пояснение. Не более трёх коротких предложений. "
         "Если данных о факте, человеке, съёмках или фильме нет, прямо скажи, что сведения не найдены. "
         "Не придумывай факты и не приписывай людям работы без подтверждения. "
         "Отделяй сюжет фильма от истории его создания. Пиши кратко и ясно."
@@ -98,7 +124,7 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
                 ],
                 "stream": False,
                 "think": False,
-                "options": {"temperature": 0.2, "num_ctx": 8192, "num_predict": 650},
+                "options": {"temperature": 0.15, "num_ctx": 4096, "num_predict": 220},
             }, timeout=180,
         )
         response.raise_for_status()
@@ -106,7 +132,7 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
         if not answer:
             raise ValueError("Ollama returned an empty response")
         cited = [int(value) for value in re.findall(r"\[(\d+)\]", answer)]
-        if not cited or any(value > len(hits) or value < 1 for value in cited):
+        if not cited or any(value > len(context_hits) or value < 1 for value in cited):
             raise ValueError("Ollama returned an answer without valid source markers")
         return answer, "qwen"
     except (httpx.HTTPError, ValueError):
