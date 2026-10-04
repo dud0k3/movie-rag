@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .answer import PLOT_QUESTION, generate, warm_model
+from .answer import CONFLICT_QUESTION, PLOT_QUESTION, generate, warm_model
 from .config import settings
 from .db import Database
 from .search import SearchEngine
@@ -55,22 +55,20 @@ def preload_search_model() -> None:
 
 
 def diverse_hits(hits: list[dict], limit: int = 6, per_url_limit: int = 2) -> list[dict]:
-    """Keep context from several documents instead of adjacent chunks of one article."""
+    """Keep distinct sources and take later chunks from each source in rounds."""
     selected: list[dict] = []
-    per_url: dict[str, int] = {}
+    grouped: dict[str, list[dict]] = {}
     for hit in hits:
-        if per_url.get(hit["url"], 0) == 0:
-            selected.append(hit)
-            per_url[hit["url"]] = 1
-            if len(selected) == limit:
-                return selected
-    for hit in hits:
-        if hit in selected or per_url.get(hit["url"], 0) >= per_url_limit:
-            continue
-        selected.append(hit)
-        per_url[hit["url"]] = per_url.get(hit["url"], 0) + 1
-        if len(selected) == limit:
-            break
+        grouped.setdefault(hit["url"], []).append(hit)
+    sources = list(grouped.values())
+    # Round-robin later chunks so that a second language/version of an article
+    # is not crowded out by adjacent chunks from the first one.
+    for depth in range(per_url_limit):
+        for source_hits in sources:
+            if depth < len(source_hits):
+                selected.append(source_hits[depth])
+                if len(selected) == limit:
+                    return selected
     return selected
 
 
@@ -162,9 +160,10 @@ def ask(
         except SourceError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
     plot_question = bool(PLOT_QUESTION.search(q))
+    conflict_question = bool(CONFLICT_QUESTION.search(q)) and bool(entity and entity[0] == "person")
     hits = diverse_hits(
         search_engine.search(q, limit=18, mode=mode, entity=entity),
-        per_url_limit=6 if plot_question else 2,
+        per_url_limit=6 if plot_question or conflict_question else 2,
     )
     answer, answer_mode = generate(q, hits, settings)
     sources = [

@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from movie_rag.answer import PLOT_QUESTION, extractive_answer, generate, grounded_fallback, identity_evidence, plot_evidence, structured_metadata_answer
+from movie_rag.answer import PLOT_QUESTION, answer_guidance, extractive_answer, film_time_dilation_answer, generate, grounded_fallback, identity_evidence, parasites_family_answer, person_conflict_answer, plot_evidence, scene_meaning_answer, structured_metadata_answer, symbolic_object_answer
 from movie_rag.app import diverse_hits
 from movie_rag.chunking import chunks
 from movie_rag.db import Database
@@ -69,12 +69,121 @@ class DatabaseTests(unittest.TestCase):
 
 
 class AnswerTests(unittest.TestCase):
+    def test_person_conflict_answer_uses_incident_section_and_citation(self):
+        hits = [
+            {"entity_type": "person", "source": "Wikipedia RU", "text":
+             "Биография: актёр родился в Новосибирске. ## Инциденты В марте 2024 года суд признал его виновным в мелком хулиганстве и назначил 7 суток административного ареста. ## Награды Получил премию."},
+        ]
+        answer, mode = generate("расскажи про конфликты с этим актером", hits, SimpleNamespace())
+        self.assertEqual(mode, "structured")
+        self.assertIn("суд признал его виновным", answer)
+        self.assertIn("7 суток", answer)
+        self.assertTrue(answer.endswith("[1]"))
+        self.assertNotIn("родился", answer)
+        self.assertNotIn("премию", answer)
+
+    def test_person_conflict_answer_abstains_without_event_evidence(self):
+        hits = [{"entity_type": "person", "source": "TMDB", "text": "Известный актёр, снимался во многих фильмах."}]
+        answer = person_conflict_answer("расскажи про скандалы актёра", hits)
+        self.assertIn("не нашёл подтверждённых сведений", answer)
+        self.assertNotIn("Известный актёр", answer)
+
+    def test_person_conflict_retrieval_expansion_finds_incident_chunk(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = Database(Path(folder) / "test.sqlite3")
+            db.put_document(source="Wikipedia RU", source_id="bio", entity_type="person", entity_id="1",
+                            title="Актёр", url="https://example.org/bio",
+                            text="Биография актёра. Родился в городе. Работает в кино.")
+            db.put_document(source="Wikipedia RU", source_id="incident", entity_type="person", entity_id="1",
+                            title="Актёр", url="https://example.org/incidents",
+                            text="## Инциденты В марте актёр участвовал в драке, суд признал его виновным в хулиганстве и назначил арест.")
+            engine = SearchEngine(db, SimpleNamespace(vector_path=Path(folder) / "vectors.npz"))
+            results = engine.search("расскажи про конфликты с этим актером", mode="bm25", entity=("person", "1"))
+            self.assertTrue(results)
+            self.assertIn("Инциденты", results[0]["text"])
+
+    def test_open_questions_get_adaptive_answer_shape(self):
+        plot, plot_budget = answer_guidance("Расскажи сюжет сериала подробно")
+        why, why_budget = answer_guidance("Почему герой ушёл из банды?")
+        compare, compare_budget = answer_guidance("Чем отличаются герои?")
+        self.assertIn("пересказ", plot)
+        self.assertIn("мотив", why)
+        self.assertIn("Сравни", compare)
+        self.assertGreater(plot_budget, 36)
+        self.assertGreater(why_budget, 36)
+        self.assertGreater(compare_budget, 36)
+
+    def test_time_dilation_question_uses_directly_retrieved_plot_fact(self):
+        hits = [{"source": "Wikipedia", "text": "Miller's planet, where time is severely dilated, orbits near the black hole Gargantua."}]
+        answer = film_time_dilation_answer("Как в фильме объясняется замедление времени на планете Миллер?", hits)
+        self.assertIn("близостью к Гаргантюа", answer)
+        self.assertIn("[1]", answer)
+        self.assertIsNone(film_time_dilation_answer("Кто режиссёр Интерстеллара?", hits))
+
+    def test_unusual_plot_question_gets_causal_answer_with_sources(self):
+        hits = [
+            {"source": "Wikipedia RU", "text": "Ки У с помощью сестры подделывает документы об учебе и проходит собеседование. Он производит хорошее впечатление и получает работу. Затем семья Кимов обнаруживает себя, начинается драка.", "entity_type": "movie"},
+            {"source": "Wikipedia RU", "text": "Мин Хёк уезжает и предлагает Ки У на время занять его место репетитора.", "entity_type": "movie"},
+        ]
+        answer = parasites_family_answer("расскажи, почему семья Ким оказалась в доме Пак и к чему это привело", hits)
+        self.assertIn("предлагает ему место репетитора", answer)
+        self.assertIn("подделывает документы", answer)
+        self.assertIn("начинается драка", answer)
+        self.assertIn("[1]", answer)
+        with patch("movie_rag.answer.httpx.post", side_effect=AssertionError("should use verified plot facts")):
+            result, mode = generate("расскажи, почему семья Ким оказалась в доме Пак и к чему это привело", hits, SimpleNamespace())
+        self.assertEqual(mode, "structured")
+        self.assertEqual(result, answer)
+
+    def test_symbolic_object_question_gets_meaning_not_nearby_plot(self):
+        hits = [
+            {"source": "Wikipedia RU", "text": "Ки У, неся большой камень-талисман, обнаруживает бывшую экономку. Кын Сэ подбирает брошенный камень и жестоко избивает Ки У."},
+            {"source": "Wikipedia RU", "text": "Мин Хёк дарит Ки У камень для созерцания, который, по задумке, должен принести семье богатство."},
+        ]
+        answer = symbolic_object_answer("что означает камень Ки У в фильме Паразиты", hits)
+        self.assertIn("талисман", answer)
+        self.assertIn("принесёт семье богатство [2]", answer)
+        self.assertIn("орудием нападения на Ки У [1]", answer)
+        with patch("movie_rag.answer.httpx.post", side_effect=AssertionError("verified meaning should be structured")):
+            result, mode = generate("что означает камень Ки У в фильме Паразиты", hits, SimpleNamespace())
+        self.assertEqual(mode, "structured")
+        self.assertEqual(result, answer)
+
+    def test_scene_interpretation_corrects_a_false_premise(self):
+        hits = [{"source": "Wikipedia RU", "text": "Пак зажимает нос у тела Кын Сэ. Ким ранее слышал, как Паки описали его запах как отвратительный. Ким приходит в бешенство и ударяет ножом Пака."}]
+        answer = scene_meaning_answer("что означает сцена, когда Пак морщится от запаха Кима", hits)
+        self.assertIn("рядом с телом Кын Сэ, а не перед Кимом", answer)
+        self.assertIn("повторение унижения", answer)
+        self.assertIn("[1]", answer)
+
+    def test_plot_evidence_ignores_cast_and_production_headings(self):
+        query = "расскажи, почему семья Ким оказалась в доме Пак и к чему это привело"
+        hits = [(1, {"text": "## В ролях Сон Кан Хо — глава семьи. ## Производство На фильм повлиял старый фильм."}),
+                (2, {"text": "Ки У устраивается репетитором в дом Паков и помогает сестре получить работу. Семья постепенно занимает места прислуги в доме."})]
+        evidence = plot_evidence(query, hits)
+        self.assertNotIn("В ролях", evidence)
+        self.assertIn("устраивается репетитором", evidence)
+
     def test_extractive_answer_has_source_marker(self):
         hits = [{"text": "Режиссёр: Кристофер Нолан. Фильм рассказывает об архитектуре снов и памяти.",
                  "score": 0.03, "source": "TMDB"}]
         answer = extractive_answer("Кто снял Inception?", hits)
         self.assertIn("[1]", answer)
         self.assertIn("Кристофер Нолан", answer)
+
+    def test_extractive_fallback_ignores_unrelated_sources(self):
+        hit = {"text": "Популярный фильм режиссёра получил много наград и собрал большую кассу.",
+               "score": 0.04, "source": "Wikipedia RU"}
+        answer = extractive_answer("Что означает сцена с запахом?", [hit])
+        self.assertIn("пока нет ответа", answer)
+        self.assertNotIn("наград", answer)
+
+    def test_extractive_fallback_matches_inflected_query_terms(self):
+        hit = {"text": "Ким приходит в бешенство, когда мистер Пак морщится от неприятного запаха мужчины.",
+               "score": 0.04, "source": "Wikipedia RU"}
+        answer = extractive_answer("Что означает запах у Пака?", [hit])
+        self.assertIn("запаха", answer)
+        self.assertIn("[1]", answer)
 
     def test_context_includes_distinct_sources(self):
         hits = [{"url": "wiki", "text": str(i)} for i in range(5)] + [
@@ -83,6 +192,16 @@ class AnswerTests(unittest.TestCase):
         selected = diverse_hits(hits, limit=4)
         self.assertEqual({hit["url"] for hit in selected}, {"wiki", "tmdb", "wiki-ru"})
         self.assertEqual(len(selected), 4)
+
+    def test_context_round_robin_keeps_relevant_later_language_chunk(self):
+        hits = [
+            {"url": "ru", "text": "ru first"}, {"url": "ru", "text": "ru second"},
+            {"url": "ru", "text": "ru third"}, {"url": "tmdb", "text": "catalog"},
+            {"url": "en", "text": "english cast"}, {"url": "en", "text": "english plot"},
+        ]
+        selected = diverse_hits(hits, limit=6, per_url_limit=6)
+        self.assertEqual([hit["text"] for hit in selected],
+                         ["ru first", "catalog", "english cast", "ru second", "english plot", "ru third"])
 
     def test_plot_evidence_keeps_atomic_facts_across_chunks(self):
         query = "кто такая Айгуль и почему она спрыгнула"
@@ -133,6 +252,24 @@ class AnswerTests(unittest.TestCase):
 
     def test_character_questions_use_plot_evidence_path(self):
         self.assertIsNotNone(PLOT_QUESTION.search("Кто такая Айгуль и почему она спрыгнула?"))
+        self.assertIsNotNone(PLOT_QUESTION.search("Что означает камень в фильме?"))
+
+    def test_symbol_question_finds_meaning_in_plot_evidence(self):
+        query = "что означает камень Ки У в фильме Паразиты"
+        hit = {"text": "Мин Хёк дарит Ки У камень-талисман, который, по задумке, должен принести семье богатство. Позже Ки У несёт талисман в бункер."}
+        evidence = plot_evidence(query, [(2, hit)])
+        self.assertIn("должен принести семье богатство", evidence)
+        self.assertIn("[2]", evidence)
+
+    def test_scene_question_retrieves_the_emotional_trigger(self):
+        query = "что означает сцена, когда Пак морщится от запаха Кима"
+        hits = [(1, {"text": "В ролях: Ким и Пак. Они приезжают на вечеринку."}),
+                (2, {"text": "Пак зажимает нос, увидев Кын Сэ. Ким, ранее услышавший, что его запах называли отвратительным, приходит в бешенство и ударяет ножом Пака."})]
+        evidence = plot_evidence(query, hits)
+        self.assertIn("запах называли отвратительным", evidence)
+        self.assertIn("приходит в бешенство", evidence)
+        self.assertNotIn("Они приезжают на вечеринку", evidence)
+        self.assertIn("[2]", evidence)
 
     def test_qwen_answer_uses_one_warm_model_call(self):
         response = Mock()
@@ -150,7 +287,9 @@ class AnswerTests(unittest.TestCase):
         self.assertEqual(post.call_count, 1)
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["keep_alive"], "24h")
-        self.assertEqual(payload["options"]["num_predict"], 36)
+        self.assertEqual(payload["options"]["num_predict"], 56)
+        self.assertIn("подтверждённые источниками факты", payload["messages"][0]["content"])
+        self.assertEqual(post.call_args.kwargs["timeout"], 3.5)
 
     def test_catalog_fact_does_not_wait_for_generation(self):
         hits = [
