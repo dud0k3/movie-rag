@@ -150,6 +150,12 @@ class Database:
         with self.connect() as db:
             return db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
 
+    def chunk_signature(self) -> tuple[int, int]:
+        """Cheap index freshness marker; chunk IDs change whenever text is replaced."""
+        with self.connect() as db:
+            row = db.execute("SELECT COUNT(*), COALESCE(MAX(id), 0) FROM chunks").fetchone()
+        return int(row[0]), int(row[1])
+
     def entity_chunk_ids(self, entity_type: str, entity_id: str) -> set[int]:
         with self.connect() as db:
             rows = db.execute(

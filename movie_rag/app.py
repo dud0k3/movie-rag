@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .answer import generate
+from .answer import PLOT_QUESTION, generate
 from .config import settings
 from .db import Database
 from .search import SearchEngine
@@ -23,7 +23,7 @@ STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
-def diverse_hits(hits: list[dict], limit: int = 6) -> list[dict]:
+def diverse_hits(hits: list[dict], limit: int = 6, per_url_limit: int = 2) -> list[dict]:
     """Keep context from several documents instead of adjacent chunks of one article."""
     selected: list[dict] = []
     per_url: dict[str, int] = {}
@@ -34,7 +34,7 @@ def diverse_hits(hits: list[dict], limit: int = 6) -> list[dict]:
             if len(selected) == limit:
                 return selected
     for hit in hits:
-        if hit in selected or per_url.get(hit["url"], 0) >= 2:
+        if hit in selected or per_url.get(hit["url"], 0) >= per_url_limit:
             continue
         selected.append(hit)
         per_url[hit["url"]] = per_url.get(hit["url"], 0) + 1
@@ -129,7 +129,11 @@ def ask(
             ingestor.ingest(entity[0], int(entity[1]))
         except SourceError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-    hits = diverse_hits(search_engine.search(q, limit=18, mode=mode, entity=entity))
+    plot_question = bool(PLOT_QUESTION.search(q))
+    hits = diverse_hits(
+        search_engine.search(q, limit=18, mode=mode, entity=entity),
+        per_url_limit=6 if plot_question else 2,
+    )
     answer, answer_mode = generate(q, hits, settings)
     sources = [
         {"number": i, "title": hit["title"], "url": hit["url"], "source": hit["source"],

@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import re
+import logging
 import httpx
 
 from .config import Settings
+
+log = logging.getLogger(__name__)
 
 
 STOPWORDS = {"что", "кто", "как", "где", "когда", "какой", "какая", "какие", "фильм", "фильма", "про", "это", "the", "was", "who", "and"}
 MARATIK = re.compile(r"\b(?:маратик\w*|maratik\w*)\b", re.IGNORECASE)
 PLOT_QUESTION = re.compile(
     r"сюжет|почему|зачем|что (?:произошло|случилось|стало)|"
-    r"концовк|финал|чем законч|умер|погиб|убил|спрыг|персонаж|героин|геро[йя]",
+    r"концовк|финал|чем законч|умер|погиб|убил|спрыг|персонаж|героин|геро[йя]|"
+    r"кто\s+(?:такой|такая|такое|это)|кем\s+(?:является|приходится)",
     re.IGNORECASE,
 )
 WHO_QUESTION = re.compile(r"кто\s+(?:такой|такая|такое|это)|кем\s+(?:является|приходится)", re.IGNORECASE)
@@ -20,53 +24,78 @@ QUESTION_FILLER = STOPWORDS | {
     "почему", "зачем", "спрыгнула", "спрыгнул", "сюжет", "персонаж", "герой", "героиня",
     "расскажи", "объясни", "происходит", "произошло", "случилось", "такой", "такая",
     "такое", "фильм", "сериал", "конце", "финал", "концовка",
+    "она", "они", "его", "ему", "него", "нему", "нее", "неё", "ее", "ей", "ими", "их",
+    "этот", "эта", "эти", "тот", "та", "те", "свой", "своя", "свои", "свою",
 }
 
 
 def plot_evidence(query: str, numbered_hits: list[tuple[int, dict]]) -> str | None:
     """Reduce retrieved plot chunks to atomic, source-backed statements."""
     query_tokens = [
-        token for token in re.findall(r"[a-zа-яё]{3,}", query.lower())
+        token.replace("ё", "е") for token in re.findall(r"[a-zа-яё]{3,}", query.lower())
         if token not in QUESTION_FILLER
     ]
+    lowered_query = query.lower().replace("ё", "е")
+    intent_terms: list[str] = []
+    if WHO_QUESTION.search(query):
+        intent_terms.extend(("романтическ", "учениц", "студент", "актёр", "актриса", "девушка"))
+    if re.search(r"спрыг|прыгнул|выпал|суицид|самоуб|покончил", lowered_query):
+        query_tokens.extend(("самоубийство", "покончила", "погибла", "окно"))
+        intent_terms.extend(("изнасил", "насил", "родител", "сочувств", "жалост", "подруг", "позор", "одна", "одинок"))
+    if re.search(r"умер|погиб|убил|убийств|смерт|скончал", lowered_query):
+        query_tokens.extend(("смерть", "погиб", "убил"))
+    if re.search(r"финал|концовк|чем закон|что в конце", lowered_query):
+        query_tokens.extend(("финал", "концовка", "развязка"))
     if not query_tokens:
         return None
-    facts: list[tuple[int, int, str]] = []
+    facts: list[tuple[int, int, int, str]] = []
     for source_number, hit in numbered_hits:
         parts = re.split(r"(?<=[.!?])\s+|\s*\|\s*", hit.get("text", ""))
         matched = []
         for index, part in enumerate(parts):
-            words = re.findall(r"[a-zа-яё]+", part.lower())
+            words = [word.replace("ё", "е") for word in re.findall(r"[a-zа-яё]+", part.lower())]
             if any(token == word or token.startswith(word[:4]) or word.startswith(token[:4])
                    for token in query_tokens for word in words if len(word) >= 4):
                 matched.append(index)
-        keep = set(matched)
-        for index in matched:
-            for neighbor in (index - 1, index + 1):
-                if not 0 <= neighbor < len(parts):
-                    continue
-                adjacent = parts[neighbor].lstrip().lower()
-                if re.match(r"(?:он|она|они|его|её|ее|это|там|тогда|после этого)\b", adjacent):
-                    keep.add(neighbor)
+        # Do not detach pronoun-led sentences from their antecedent. In long
+        # episode summaries this can swap the actor when the model sees only
+        # the selected sentence.
+        keep = {index for index in matched if not re.match(
+            r"\s*(?:он|она|они|его|её|ее|это|там|тогда|после этого)\b", parts[index].lower()
+        )}
         source_facts = []
         for index in sorted(keep):
             fact = " ".join(parts[index].split()).strip(" -|\t")
             if len(fact) >= 35 and not fact[:1].isdigit():
-                source_facts.append((source_number, index, fact))
+                words_normalized = [word.replace("ё", "е") for word in re.findall(r"[a-zа-яё]+", fact.lower())]
+                relevance = sum(
+                    10 if term.startswith("романтическ") and any(word.startswith(term[:8]) for word in words_normalized)
+                    else 5 if any(word.startswith(term[:5]) for word in words_normalized) else 0
+                    for term in intent_terms
+                )
+                relevance += sum(
+                    2 if any(token == word or token.startswith(word[:4]) or word.startswith(token[:4])
+                             for word in words_normalized if len(word) >= 4) else 0
+                    for token in query_tokens
+                )
+                source_facts.append((relevance, source_number, index, fact))
         # Give each retrieved plot passage room; otherwise the first long
         # chunk can crowd out the ending or the reason asked about.
-        facts.extend(source_facts[:10])
+        facts.extend(source_facts)
     if not facts:
         return None
     seen = set()
     lines = []
-    for source_number, _, fact in facts:
+    # A plot chunk may cover an entire episode. Keep only the passages that
+    # answer this question, instead of filling the prompt with nearby subplots.
+    facts.sort(key=lambda item: (-item[0], item[1], item[2]))
+    for _, source_number, _, fact in facts:
         key = re.sub(r"\W+", "", fact.lower())
         if key in seen:
             continue
         seen.add(key)
         lines.append(f"[{source_number}] {fact}")
-        if len(lines) >= 24:
+        if len(lines) >= 8:
             break
     return "Факты сюжета из источников. Сохраняй, кто именно совершает каждое действие:\n" + "\n".join(lines)
 
@@ -179,6 +208,22 @@ def extractive_answer(query: str, hits: list[dict]) -> str:
     return "\n\n".join(selected)
 
 
+def grounded_fallback(query: str, hits: list[dict]) -> str:
+    """Use plot evidence as the fallback so model failures cannot derail the answer."""
+    if PLOT_QUESTION.search(query):
+        numbered_hits = list(enumerate(hits, start=1))
+        wiki_hits = [(number, hit) for number, hit in numbered_hits if hit.get("source") == "Wikipedia RU"][:6]
+        evidence = plot_evidence(query, wiki_hits)
+        if evidence:
+            lines = [line for line in evidence.splitlines() if re.match(r"\[\d+\] ", line)]
+            lead = identity_evidence(query, evidence)
+            ordered = ([lead] if lead else []) + [line for line in lines if line != lead]
+            answer = "\n\n".join(ordered[:6])
+            if answer:
+                return answer
+    return extractive_answer(query, hits)
+
+
 def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
     direct_answer = character_fact(query, hits)
     if direct_answer:
@@ -202,6 +247,7 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
         "Ты помощник по истории кино. Отвечай только на русском языке, даже если источник на английском. "
         "Для ответа о сюжете сначала внимательно сверь подробные пересказы серий; они важнее кратких карточек каталога. "
         "Если источники не раскрывают нужную деталь, можешь осторожно дополнить ответ своими знаниями, но обозначь неуверенность. "
+        "В контексте группировки слово «отшить» означает исключить человека из группировки, а не избить или расправиться с ним. "
         "Не додумывай мотивы, угрозы, принадлежность героя к группировке и другие факты, которых нет в тексте источника. "
         "Если принадлежность или причина поступка не названа прямо, не приписывай её персонажу. Точно сохраняй родство, отношения и последовательность событий. "
         "Сохраняй точного действующего персонажа: не меняй местами, кто напал, спас, убил или сказал. "
@@ -225,7 +271,11 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
                 ],
                 "stream": False,
                 "think": False,
-                "options": {"temperature": 0.25, "num_ctx": 8192, "num_predict": 700},
+                "options": {
+                    "temperature": 0.25,
+                    "num_ctx": 4096 if evidence else 8192,
+                    "num_predict": 520 if evidence else 650,
+                },
             }, timeout=180,
         )
         response.raise_for_status()
@@ -249,6 +299,7 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
                             "Исправь неверные роли, причины и неподтверждённые утверждения. "
                             "Не выводи принадлежность героя к группировке из того, что он общается с её членами "
                             "или стал жертвой её нападения. Не меняй персонажа, совершившего действие, узнавшего новость или испытавшего событие. "
+                            "Слово «отшить» в контексте группировки означает исключение из неё, не физическую расправу. "
                             "Не приписывай персонажам мысли, чувства, вину или мотивы, если это прямо не сказано. "
                             "Не повторяй один факт разными словами. Если факт не подтверждается списком, удали его. "
                             "Пиши по-русски, естественно и содержательно. "
@@ -259,7 +310,7 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
                     ],
                     "stream": False,
                     "think": False,
-                    "options": {"temperature": 0.05, "num_ctx": 8192, "num_predict": 450},
+                    "options": {"temperature": 0.05, "num_ctx": 4096, "num_predict": 220},
                 }, timeout=90,
             )
             review.raise_for_status()
@@ -273,5 +324,6 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
             number = re.match(r"^\[(\d+)\]", lead).group(1)
             answer = f"{fact} [{number}]\n\n{answer}"
         return answer, "qwen"
-    except (httpx.HTTPError, ValueError):
-        return extractive_answer(query, hits), "extractive"
+    except (httpx.HTTPError, ValueError) as exc:
+        log.warning("Qwen answer failed; using grounded fallback: %s", exc)
+        return grounded_fallback(query, hits), "extractive"

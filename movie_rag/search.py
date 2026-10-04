@@ -26,6 +26,7 @@ class SearchEngine:
         self._vectors: np.ndarray | None = None
         self._faiss = None
         self._index = None
+        self._db_signature: tuple[int, int] | None = None
         self.semantic_error: str | None = None
 
     def _load_model(self):
@@ -36,12 +37,16 @@ class SearchEngine:
 
     def rebuild(self, force: bool = False) -> int:
         with self._lock:
+            signature = self.db.chunk_signature()
+            if not force and self._ids is not None and self._db_signature == signature:
+                return len(self._ids)
             rows = self.db.all_chunks()
             ids = np.array([int(row["id"]) for row in rows], dtype=np.int64)
             if not len(ids):
                 self._ids = ids
                 self._vectors = np.empty((0, 0), dtype=np.float32)
                 self._index = None
+                self._db_signature = signature
                 return 0
             path = self.config.vector_path
             reusable: dict[int, np.ndarray] = {}
@@ -53,6 +58,7 @@ class SearchEngine:
                         if np.array_equal(ids, old_ids):
                             self._ids = old_ids
                             self._vectors = old_vectors
+                            self._db_signature = signature
                             self._make_index()
                             return len(ids)
                         if old_vectors.ndim == 2 and len(old_ids) == len(old_vectors):
@@ -89,6 +95,7 @@ class SearchEngine:
             np.savez_compressed(temp, ids=ids, vectors=vectors)
             temp.replace(path)
             self._ids, self._vectors = ids, vectors
+            self._db_signature = signature
             self._make_index()
             return len(ids)
 
@@ -148,6 +155,8 @@ class SearchEngine:
             retrieval_query += " финал концовка развязка в конце"
         if re.search(r"почему|зачем", lowered_query) and re.search(r"сделал|поступил|ушёл|ушел|предал|убил|умер|погиб|спрыг|выбрал", lowered_query):
             retrieval_query += " причина мотив решение последствия"
+        if re.search(r"кто\s+(?:такой|такая|такое|это)|кем\s+(?:является|приходится)", lowered_query):
+            retrieval_query += " роль персонаж ученик ученица студент девушка сын дочь актёр актриса"
         lexical = self.db.bm25(retrieval_query, candidates, entity) if mode in {"hybrid", "bm25"} else []
         character_alias_query = bool(
             entity and entity[0] == "tv"
