@@ -101,7 +101,7 @@ async function ask() {
     $('sources-column').classList.remove('hidden');
     document.querySelector('.workspace').classList.add('has-answer');
     $('answer-title').textContent = 'Ответ';
-    $('answer-mode').textContent = data.answer_mode === 'qwen' ? 'Qwen · локальная модель' : data.answer_mode === 'structured' ? 'Ответ по данным сериала' : 'Выжимка из источников';
+    $('answer-mode').textContent = data.answer_mode === 'qwen' ? 'Qwen · локальная модель' : data.answer_mode === 'structured' ? 'Ответ по данным каталога' : 'Выжимка из источников';
     const sources = uniqueSources(data.sources);
     renderAnswer(data.answer, sources.citations);
     renderSources(sources.list);

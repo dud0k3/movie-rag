@@ -95,7 +95,7 @@ def plot_evidence(query: str, numbered_hits: list[tuple[int, dict]]) -> str | No
             continue
         seen.add(key)
         lines.append(f"[{source_number}] {fact}")
-        if len(lines) >= 8:
+        if len(lines) >= 4:
             break
     return "Факты сюжета из источников. Сохраняй, кто именно совершает каждое действие:\n" + "\n".join(lines)
 
@@ -140,6 +140,61 @@ def character_fact(query: str, hits: list[dict]) -> str | None:
         ):
             if character.strip().lower().startswith("marat suvorov"):
                 return f"Маратик — это Марат Суворов; его играет {actor.strip()} [{source_number}]."
+    return None
+
+
+def structured_metadata_answer(query: str, hits: list[dict]) -> str | None:
+    """Answer credits and release-date questions directly from catalog fields."""
+    lowered = query.lower()
+    fields = []
+    if re.search(r"режисс|кто\s+снял|постановщик", lowered):
+        fields = [(r"Режиссёр", "Режиссёр")]
+    elif re.search(r"сценар|кто\s+написал", lowered):
+        fields = [(r"Сценаристы", "Сценарий написали")]
+    elif re.search(r"композитор|музык\w*\s+(?:к|в|из)|кто\s+написал\s+музык", lowered):
+        fields = [(r"Композитор", "Музыку написал")]
+    elif re.search(r"акт[её]р|актрис|кто\s+сыграл|в\s+ролях|каст", lowered):
+        fields = [(r"Главные акт[её]ры", "В главных ролях"),
+                  (r"Персонажи и исполнители", "Персонажи и исполнители")]
+    elif re.search(r"создател|кто\s+создал", lowered):
+        fields = [(r"Создатели", "Создатели сериала")]
+    elif re.search(r"когда\s+вышел|дата\s+выхода|год\s+выхода|в\s+каком\s+году", lowered):
+        fields = [(r"Дата выхода", "Дата выхода")]
+    if not fields:
+        return None
+    next_field = (
+        r"(?:Фильм|Оригинальное название|Русское название|Дата выхода|Режиссёр|Сценаристы|Оператор|"
+        r"Композитор|Продюсеры|Главные акт[её]ры|Создатели|Количество сезонов|"
+        r"Персонажи и исполнители|Описание(?: на русском)?)"
+    )
+    for source_number, hit in enumerate(hits, start=1):
+        if hit.get("source") != "TMDB":
+            continue
+        for field_pattern, label in fields:
+            match = re.search(
+                rf"(?:^|[.\n]\s*){field_pattern}:\s*(.*?)(?=\.\s*{next_field}:|$)",
+                hit.get("text", ""), re.IGNORECASE | re.DOTALL,
+            )
+            if not match:
+                continue
+            value = match.group(1).strip().rstrip(".")
+            if not value or value.lower() in {"не указано", "не указаны", "не указана"}:
+                continue
+            if label == "В главных ролях":
+                value = ", ".join(value.split(", ")[:5])
+            elif label == "Персонажи и исполнители":
+                value = "; ".join(value.split("; ")[:5])
+            if label == "Режиссёр":
+                for ru_number, ru_hit in enumerate(hits, start=1):
+                    if ru_hit.get("source") != "Wikipedia RU":
+                        continue
+                    russian_name = re.search(
+                        r"(?i:режисс[её]р\w*)\s+([А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){1,2})",
+                        ru_hit.get("text", ""),
+                    )
+                    if russian_name:
+                        return f"Это фильм режиссёра {russian_name.group(1)} [{ru_number}]."
+            return f"{label} — {value} [{source_number}]."
     return None
 
 
@@ -224,15 +279,39 @@ def grounded_fallback(query: str, hits: list[dict]) -> str:
     return extractive_answer(query, hits)
 
 
+def warm_model(config: Settings) -> None:
+    """Load Qwen in the background so the first user question avoids cold start."""
+    try:
+        response = httpx.post(
+            f"{config.ollama_url.rstrip('/')}/api/generate",
+            json={
+                "model": config.ollama_model,
+                "prompt": " ",
+                "stream": False,
+                "keep_alive": "24h",
+                "think": False,
+                "options": {"num_ctx": 4096, "num_predict": 1},
+            },
+            timeout=120,
+        )
+        response.raise_for_status()
+        log.info("Qwen model is warm and will remain loaded for 24 hours")
+    except httpx.HTTPError as exc:
+        log.warning("Could not preload Qwen: %s", exc)
+
+
 def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
     direct_answer = character_fact(query, hits)
+    if direct_answer:
+        return direct_answer, "structured"
+    direct_answer = structured_metadata_answer(query, hits)
     if direct_answer:
         return direct_answer, "structured"
     if not hits:
         return extractive_answer(query, hits), "extractive"
     numbered_hits = list(enumerate(hits, start=1))
     # Plot articles usually contain far more detail than TMDb's one-paragraph
-    # synopsis. Give those focused questions several plot chunks when available.
+    # synopsis. Give focused questions several plot chunks when available.
     if PLOT_QUESTION.search(query) and any(hit.get("source") == "Wikipedia RU" for hit in hits):
         preferred = [(number, hit) for number, hit in numbered_hits if hit.get("source") == "Wikipedia RU"]
         numbered_context = preferred[:4]
@@ -240,25 +319,13 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
         numbered_context = numbered_hits[:4]
     evidence = plot_evidence(query, numbered_context) if PLOT_QUESTION.search(query) else None
     context = evidence or "\n\n".join(
-        f"[{index}] Источник: {hit['title']} ({hit['url']})\n{hit['text'][:4200]}"
-        for index, hit in numbered_context
+        f"[{index}] {hit['title']}\n{hit['text'][:1500]}"
+        for index, hit in numbered_context[:3]
     )
     system = (
-        "Ты помощник по истории кино. Отвечай только на русском языке, даже если источник на английском. "
-        "Для ответа о сюжете сначала внимательно сверь подробные пересказы серий; они важнее кратких карточек каталога. "
-        "Если источники не раскрывают нужную деталь, можешь осторожно дополнить ответ своими знаниями, но обозначь неуверенность. "
-        "В контексте группировки слово «отшить» означает исключить человека из группировки, а не избить или расправиться с ним. "
-        "Не додумывай мотивы, угрозы, принадлежность героя к группировке и другие факты, которых нет в тексте источника. "
-        "Если принадлежность или причина поступка не названа прямо, не приписывай её персонажу. Точно сохраняй родство, отношения и последовательность событий. "
-        "Сохраняй точного действующего персонажа: не меняй местами, кто напал, спас, убил или сказал. "
-        "Не превращай угрозу исключения из группировки в угрозу убийством. Не цитируй английские предложения без перевода. "
-        "Ставь ссылку [номер] рядом с фактами, подтверждёнными источником; не приписывай источнику то, чего в нём нет. "
-        "Сначала ответь прямо; если спрашивают, кто персонаж, в первом предложении назови его роль или связь с героями по источнику. "
-        "На вопрос о сюжете дай содержательное объяснение причин и последовательности событий, обычно 5–8 предложений, "
-        "сохраняя важные детали и предупреждая о спойлерах, если раскрываешь развязку. На простой вопрос отвечай короче. "
-        "Не смешивай персонажей и сюжетные линии. Не добавляй сведения о создании фильма, если об этом не спросили. "
-        "Перед отправкой проверь, что каждое предложение подтверждается источниками и не противоречит им. "
-        "Пиши естественно и ясно, как собеседник, а не как справочник."
+        "Ответь по-русски прямо и кратко одним законченным предложением, максимум 25 слов. "
+        "Используй только факты ниже, не путай действующих лиц и не додумывай причины. "
+        "«Отшить» значит исключить из группировки. Ставь [номер источника] после фактов."
     )
     try:
         response = httpx.post(
@@ -271,53 +338,29 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
                 ],
                 "stream": False,
                 "think": False,
+                "keep_alive": "24h",
                 "options": {
-                    "temperature": 0.25,
-                    "num_ctx": 4096 if evidence else 8192,
-                    "num_predict": 520 if evidence else 650,
+                    "temperature": 0.15,
+                    "num_ctx": 4096,
+                    "num_predict": 36,
                 },
             }, timeout=180,
         )
         response.raise_for_status()
-        answer = response.json().get("message", {}).get("content", "").strip()
+        result = response.json()
+        answer = result.get("message", {}).get("content", "").strip()
         if not answer:
             raise ValueError("Ollama returned an empty response")
+        sentence_tail = re.sub(r"(?:\s*\[\d+\])+\s*$", "", answer)
+        if not sentence_tail or sentence_tail[-1] not in ".!?":
+            raise ValueError("Ollama response did not finish a complete sentence")
         cited = [int(value) for value in re.findall(r"\[(\d+)\]", answer)]
         allowed_citations = {index for index, _ in numbered_context}
         if not cited or any(value not in allowed_citations for value in cited):
             raise ValueError("Ollama returned an answer without valid source markers")
-        if evidence:
-            # A second, short grounding pass catches role swaps and invented
-            # relationships that a small local model can add while narrating.
-            review = httpx.post(
-                f"{config.ollama_url.rstrip('/')}/api/chat",
-                json={
-                    "model": config.ollama_model,
-                    "messages": [
-                        {"role": "system", "content": (
-                            "Ты редактор-верификатор ответов о сюжете. Сверь черновик с фактами. "
-                            "Исправь неверные роли, причины и неподтверждённые утверждения. "
-                            "Не выводи принадлежность героя к группировке из того, что он общается с её членами "
-                            "или стал жертвой её нападения. Не меняй персонажа, совершившего действие, узнавшего новость или испытавшего событие. "
-                            "Слово «отшить» в контексте группировки означает исключение из неё, не физическую расправу. "
-                            "Не приписывай персонажам мысли, чувства, вину или мотивы, если это прямо не сказано. "
-                            "Не повторяй один факт разными словами. Если факт не подтверждается списком, удали его. "
-                            "Пиши по-русски, естественно и содержательно. "
-                            "Ставь ссылку [номер] после каждого предложения с фактами. "
-                            "Сохрани ссылки [номер] у подтверждённых фактов. Выведи только исправленный ответ."
-                        )},
-                        {"role": "user", "content": f"{context}\n\nЧерновик:\n{answer}"},
-                    ],
-                    "stream": False,
-                    "think": False,
-                    "options": {"temperature": 0.05, "num_ctx": 4096, "num_predict": 220},
-                }, timeout=90,
-            )
-            review.raise_for_status()
-            reviewed = review.json().get("message", {}).get("content", "").strip()
-            review_citations = [int(value) for value in re.findall(r"\[(\d+)\]", reviewed)]
-            if reviewed and review_citations and all(value in allowed_citations for value in review_citations):
-                answer = reviewed
+        log.info("Qwen answered in %.2fs (%s prompt tokens, %s output tokens)",
+                 result.get("total_duration", 0) / 1e9,
+                 result.get("prompt_eval_count", "?"), result.get("eval_count", "?"))
         lead = identity_evidence(query, context) if evidence else None
         if lead and not re.search(r"романтическ|возлюблен|учениц|студент|девушк|сын|дочер|брат|сестр", answer, re.IGNORECASE):
             fact = re.sub(r"^\[\d+\]\s*", "", lead)

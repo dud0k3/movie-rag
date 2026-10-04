@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Thread
+import logging
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .answer import PLOT_QUESTION, generate
+from .answer import PLOT_QUESTION, generate, warm_model
 from .config import settings
 from .db import Database
 from .search import SearchEngine
@@ -21,6 +23,22 @@ ingestor = Ingestor(db, settings)
 app = FastAPI(title="Movie RAG", version="0.1.0", description="Поиск и ответы о фильмах с источниками")
 STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+log = logging.getLogger(__name__)
+
+
+@app.on_event("startup")
+def preload_answer_model() -> None:
+    # Keep startup responsive while loading the local model before the first ask.
+    Thread(target=warm_model, args=(settings,), daemon=True, name="qwen-warmup").start()
+    Thread(target=preload_search_model, daemon=True, name="search-warmup").start()
+
+
+def preload_search_model() -> None:
+    try:
+        search_engine.warm()
+        log.info("Search encoder and vector index are ready")
+    except Exception:
+        log.exception("Could not preload the semantic search encoder")
 
 
 def diverse_hits(hits: list[dict], limit: int = 6, per_url_limit: int = 2) -> list[dict]:

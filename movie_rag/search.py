@@ -35,6 +35,12 @@ class SearchEngine:
             self._model = SentenceTransformer(self.config.embedding_model)
         return self._model
 
+    def warm(self) -> None:
+        """Prime the on-disk vector index and query encoder before first search."""
+        with self._lock:
+            self.rebuild()
+            self._load_model().encode(["кино"], normalize_embeddings=True, show_progress_bar=False)
+
     def rebuild(self, force: bool = False) -> int:
         with self._lock:
             signature = self.db.chunk_signature()

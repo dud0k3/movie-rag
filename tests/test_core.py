@@ -2,11 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
-from movie_rag.answer import PLOT_QUESTION, extractive_answer, grounded_fallback, identity_evidence, plot_evidence
+from movie_rag.answer import PLOT_QUESTION, extractive_answer, generate, grounded_fallback, identity_evidence, plot_evidence, structured_metadata_answer
 from movie_rag.app import diverse_hits
 from movie_rag.chunking import chunks
 from movie_rag.db import Database
@@ -133,6 +133,34 @@ class AnswerTests(unittest.TestCase):
 
     def test_character_questions_use_plot_evidence_path(self):
         self.assertIsNotNone(PLOT_QUESTION.search("Кто такая Айгуль и почему она спрыгнула?"))
+
+    def test_qwen_answer_uses_one_warm_model_call(self):
+        response = Mock()
+        response.json.return_value = {
+            "message": {"content": "Фильм снял Кристофер Нолан [1]."},
+            "total_duration": 2_000_000_000, "prompt_eval_count": 100, "eval_count": 20,
+        }
+        hits = [{"title": "Фильм", "url": "https://example.org", "text": "Режиссёр: Кристофер Нолан.",
+                 "source": "TMDB", "score": 1.0}]
+        config = SimpleNamespace(ollama_url="http://localhost:11434", ollama_model="qwen3.5:9b")
+        with patch("movie_rag.answer.httpx.post", return_value=response) as post:
+            answer, mode = generate("Почему фильм стал известен?", hits, config)
+        self.assertEqual(mode, "qwen")
+        self.assertIn("Кристофер Нолан", answer)
+        self.assertEqual(post.call_count, 1)
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["keep_alive"], "24h")
+        self.assertEqual(payload["options"]["num_predict"], 36)
+
+    def test_catalog_fact_does_not_wait_for_generation(self):
+        hits = [
+            {"source": "TMDB", "text": "Фильм: Interstellar. Оригинальное название: Interstellar. Режиссёр: Christopher Nolan. Сценаристы: Jonathan Nolan, Christopher Nolan. Оператор: Hoyte van Hoytema."},
+            {"source": "Wikipedia RU", "text": "«Интерстеллар» — фильм режиссёра Кристофера Нолана, снятый в 2014 году."},
+        ]
+        answer = structured_metadata_answer("Кто режиссёр фильма?", hits)
+        self.assertEqual(answer, "Это фильм режиссёра Кристофера Нолана [2].")
+        with patch("movie_rag.answer.httpx.post", side_effect=AssertionError("LLM should not be called")):
+            self.assertEqual(generate("Кто режиссёр фильма?", hits, SimpleNamespace()), (answer, "structured"))
 
 
 if __name__ == "__main__":
