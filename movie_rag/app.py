@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from threading import Thread
+from threading import Lock, Thread
 import logging
 
 from fastapi import FastAPI, HTTPException, Query
@@ -24,13 +24,23 @@ app = FastAPI(title="Movie RAG", version="0.1.0", description="Поиск и о�
 STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 log = logging.getLogger(__name__)
+_warmup_lock = Lock()
+_warmup_done: set[str] = set()
 
 
 @app.on_event("startup")
 def preload_answer_model() -> None:
     # Keep startup responsive while loading the local model before the first ask.
-    Thread(target=warm_model, args=(settings,), daemon=True, name="qwen-warmup").start()
+    Thread(target=preload_qwen, daemon=True, name="qwen-warmup").start()
     Thread(target=preload_search_model, daemon=True, name="search-warmup").start()
+
+
+def preload_qwen() -> None:
+    try:
+        warm_model(settings)
+    finally:
+        with _warmup_lock:
+            _warmup_done.add("qwen")
 
 
 def preload_search_model() -> None:
@@ -39,6 +49,9 @@ def preload_search_model() -> None:
         log.info("Search encoder and vector index are ready")
     except Exception:
         log.exception("Could not preload the semantic search encoder")
+    finally:
+        with _warmup_lock:
+            _warmup_done.add("search")
 
 
 def diverse_hits(hits: list[dict], limit: int = 6, per_url_limit: int = 2) -> list[dict]:
@@ -75,7 +88,8 @@ def home():
 @app.get("/health")
 def health():
     return {"ok": True, "tmdb_configured": settings.has_tmdb_auth,
-            "database": db.stats(), "semantic_error": search_engine.semantic_error}
+            "database": db.stats(), "semantic_error": search_engine.semantic_error,
+            "ready": len(_warmup_done) == 2}
 
 
 @app.get("/discover")

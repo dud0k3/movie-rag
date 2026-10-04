@@ -88,6 +88,7 @@ function renderAnswer(answer, citations) {
 
 async function ask() {
   const query = $('question').value.trim();
+  if ($('ask-button').disabled) { setStatus('Подготавливаем быстрый поиск…'); return; }
   if (query.length < 2) { setStatus('Введите вопрос.', true); return; }
   document.querySelector('.advanced').open = false;
   const button = $('ask-button');
@@ -115,3 +116,18 @@ $('discover-button').addEventListener('click', discover);
 $('discover-input').addEventListener('keydown', event => { if (event.key === 'Enter') discover(); });
 $('ask-button').addEventListener('click', ask);
 $('question').addEventListener('keydown', event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) ask(); });
+
+async function waitForReady() {
+  try {
+    const data = await getJSON('/health');
+    if (data.ready) {
+      $('ask-button').disabled = false;
+      setStatus('Можно задавать вопросы.');
+      return;
+    }
+  } catch {}
+  setStatus('Подготавливаем быстрый поиск…');
+  window.setTimeout(waitForReady, 400);
+}
+
+waitForReady();
