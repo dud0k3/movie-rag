@@ -15,6 +15,7 @@ PLOT_QUESTION = re.compile(
     r"концовк|финал|чем законч|умер|погиб|убил|спрыг|персонаж|героин|геро[йя]",
     re.IGNORECASE,
 )
+WHO_QUESTION = re.compile(r"кто\s+(?:такой|такая|такое|это)|кем\s+(?:является|приходится)", re.IGNORECASE)
 QUESTION_FILLER = STOPWORDS | {
     "почему", "зачем", "спрыгнула", "спрыгнул", "сюжет", "персонаж", "герой", "героиня",
     "расскажи", "объясни", "происходит", "произошло", "случилось", "такой", "такая",
@@ -39,8 +40,14 @@ def plot_evidence(query: str, numbered_hits: list[tuple[int, dict]]) -> str | No
             if any(token == word or token.startswith(word[:4]) or word.startswith(token[:4])
                    for token in query_tokens for word in words if len(word) >= 4):
                 matched.append(index)
-        keep = {neighbor for index in matched for neighbor in (index - 1, index, index + 1)
-                if 0 <= neighbor < len(parts)}
+        keep = set(matched)
+        for index in matched:
+            for neighbor in (index - 1, index + 1):
+                if not 0 <= neighbor < len(parts):
+                    continue
+                adjacent = parts[neighbor].lstrip().lower()
+                if re.match(r"(?:он|она|они|его|её|ее|это|там|тогда|после этого)\b", adjacent):
+                    keep.add(neighbor)
         source_facts = []
         for index in sorted(keep):
             fact = " ".join(parts[index].split()).strip(" -|\t")
@@ -62,6 +69,34 @@ def plot_evidence(query: str, numbered_hits: list[tuple[int, dict]]) -> str | No
         if len(lines) >= 24:
             break
     return "Факты сюжета из источников. Сохраняй, кто именно совершает каждое действие:\n" + "\n".join(lines)
+
+
+def identity_evidence(query: str, context: str) -> str | None:
+    """Surface an explicit role or relationship first when the user asks who someone is."""
+    if not WHO_QUESTION.search(query):
+        return None
+    subject_terms = [
+        token for token in re.findall(r"[a-zа-яё]{4,}", query.lower())
+        if token not in QUESTION_FILLER
+    ]
+    for line in context.splitlines():
+        match = re.match(r"\[(\d+)\]\s+(.+)", line)
+        if not match:
+            continue
+        fact = match.group(2)
+        words = re.findall(r"[a-zа-яё]+", fact.lower())
+        mentions_subject = any(token == word or token.startswith(word[:4]) or word.startswith(token[:4])
+                               for token in subject_terms for word in words if len(word) >= 4)
+        describes_role = re.search(
+            r"романтическ\w* отношени|учениц\w*|студент\w*|акт[её]р\w*|играет роль",
+            fact, re.IGNORECASE,
+        ) or re.search(
+            r"(?:девушк\w*|парень|муж|жен\w*|сын|дочер\w*|брат|сестр\w*)\s+(?:[А-ЯЁ][а-яё-]+|главн\w+ геро\w+)",
+            fact,
+        )
+        if mentions_subject and describes_role:
+            return line
+    return None
 
 
 def character_fact(query: str, hits: list[dict]) -> str | None:
@@ -213,9 +248,10 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
                             "Ты редактор-верификатор ответов о сюжете. Сверь черновик с фактами. "
                             "Исправь неверные роли, причины и неподтверждённые утверждения. "
                             "Не выводи принадлежность героя к группировке из того, что он общается с её членами "
-                            "или стал жертвой её нападения. Не меняй персонажа, совершившего действие. "
+                            "или стал жертвой её нападения. Не меняй персонажа, совершившего действие, узнавшего новость или испытавшего событие. "
                             "Не приписывай персонажам мысли, чувства, вину или мотивы, если это прямо не сказано. "
-                            "Если факт не подтверждается списком, удали его. Пиши по-русски, естественно и содержательно. "
+                            "Не повторяй один факт разными словами. Если факт не подтверждается списком, удали его. "
+                            "Пиши по-русски, естественно и содержательно. "
                             "Ставь ссылку [номер] после каждого предложения с фактами. "
                             "Сохрани ссылки [номер] у подтверждённых фактов. Выведи только исправленный ответ."
                         )},
@@ -231,6 +267,11 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
             review_citations = [int(value) for value in re.findall(r"\[(\d+)\]", reviewed)]
             if reviewed and review_citations and all(value in allowed_citations for value in review_citations):
                 answer = reviewed
+        lead = identity_evidence(query, context) if evidence else None
+        if lead and not re.search(r"романтическ|возлюблен|учениц|студент|девушк|сын|дочер|брат|сестр", answer, re.IGNORECASE):
+            fact = re.sub(r"^\[\d+\]\s*", "", lead)
+            number = re.match(r"^\[(\d+)\]", lead).group(1)
+            answer = f"{fact} [{number}]\n\n{answer}"
         return answer, "qwen"
     except (httpx.HTTPError, ValueError):
         return extractive_answer(query, hits), "extractive"
