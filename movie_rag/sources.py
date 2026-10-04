@@ -219,6 +219,26 @@ class Wikipedia:
             return None
         soup = BeautifulSoup(data.get("html", ""), "html.parser")
         body = soup.select_one(".mw-parser-output") or soup
+        # Wikipedia often stores episode synopses and cast lists in wikitable
+        # markup. Preserve useful tables before removing layout/navigation tables.
+        table_sections = []
+        for table in body.select("table.wikitable"):
+            rows = []
+            for row in table.find_all("tr"):
+                cells = [" ".join(cell.get_text(" ", strip=True).split())
+                         for cell in row.find_all(["th", "td"], recursive=False)]
+                cells = list(dict.fromkeys(re.sub(r"\[\d+\]", "", cell).strip() for cell in cells))
+                if cells and any(cells):
+                    rows.append(" | ".join(cell for cell in cells if cell))
+            if not rows:
+                continue
+            content = "\n".join(rows)
+            signals = ("описание серии", "содержание", "актёр", "актер", "роль", "episode", "cast", "plot")
+            if any(signal in content.lower() for signal in signals) or any(len(row) > 250 for row in rows):
+                table_sections.append((0 if "описание серии" in content.lower() or "episode" in content.lower() else 1,
+                                       f"\n## Сведения из таблицы Википедии\n{content}"))
+            table.decompose()
+        table_sections.sort(key=lambda item: item[0])
         for tag in body.select(
             "table, nav, aside, style, script, sup.reference, .mw-editsection, "
             ".reflist, .navbox, .hatnote, .metadata, .mw-empty-elt"
@@ -236,7 +256,7 @@ class Wikipedia:
                 sections.append(f"\n## {text}\n")
             else:
                 sections.append(text)
-        text = re.sub(r"\[\d+\]", "", "\n".join(sections)).strip()
+        text = re.sub(r"\[\d+\]", "", "\n".join(sections + [item[1] for item in table_sections])).strip()
         if len(text) < 200:
             return None
         url = data.get("html_url") or f"https://{self.language}.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}"

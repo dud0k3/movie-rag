@@ -136,12 +136,24 @@ class SearchEngine:
             raise ValueError("mode must be hybrid, bm25 or semantic")
         limit = max(1, min(limit, 30))
         candidates = max(30, limit * 5)
-        lexical = self.db.bm25(query, candidates, entity) if mode in {"hybrid", "bm25"} else []
+        retrieval_query = query
+        lowered_query = query.lower()
+        if re.search(r"спрыг|прыгнул|выпал|суицид|самоубий|покончил", lowered_query):
+            # Users describe the same plot event in many ways; an article may
+            # say “покончила с собой” or “выпала из окна”, not “спрыгнула”.
+            retrieval_query += " самоубийство покончила с собой выпала из окна погибла"
+        if re.search(r"умер|погиб|убил|убийств|смерт|скончал", lowered_query):
+            retrieval_query += " смерть погиб убийство убил умер"
+        if re.search(r"финал|концовк|чем законч|что в конце", lowered_query):
+            retrieval_query += " финал концовка развязка в конце"
+        if re.search(r"почему|зачем", lowered_query) and re.search(r"сделал|поступил|ушёл|ушел|предал|убил|умер|погиб|спрыг|выбрал", lowered_query):
+            retrieval_query += " причина мотив решение последствия"
+        lexical = self.db.bm25(retrieval_query, candidates, entity) if mode in {"hybrid", "bm25"} else []
         character_alias_query = bool(
             entity and entity[0] == "tv"
             and re.search(r"\b(?:маратик\w*|maratik\w*)\b", query.lower())
         )
-        semantic = self.vector(query, candidates, entity) if mode == "semantic" or mode == "hybrid" and not character_alias_query else []
+        semantic = self.vector(retrieval_query, candidates, entity) if mode == "semantic" or mode == "hybrid" and not character_alias_query else []
         ranks: dict[int, dict] = {}
         for rank, (ident, score) in enumerate(lexical, start=1):
             ranks.setdefault(ident, {"score": 0.0, "bm25_score": None, "semantic_score": None})

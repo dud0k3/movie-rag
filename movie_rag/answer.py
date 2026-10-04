@@ -10,6 +10,11 @@ from .config import Settings
 
 STOPWORDS = {"что", "кто", "как", "где", "когда", "какой", "какая", "какие", "фильм", "фильма", "про", "это", "the", "was", "who", "and"}
 MARATIK = re.compile(r"\b(?:маратик\w*|maratik\w*)\b", re.IGNORECASE)
+PLOT_QUESTION = re.compile(
+    r"сюжет|почему|зачем|что (?:произошло|случилось|стало)|"
+    r"концовк|финал|чем законч|умер|погиб|убил|спрыг|персонаж|героин|геро[йя]",
+    re.IGNORECASE,
+)
 
 
 def character_fact(query: str, hits: list[dict]) -> str | None:
@@ -98,20 +103,31 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
         return direct_answer, "structured"
     if not hits:
         return extractive_answer(query, hits), "extractive"
-    context_hits = hits[:4]
+    numbered_hits = list(enumerate(hits, start=1))
+    # Plot articles usually contain far more detail than TMDb's one-paragraph
+    # synopsis. Give those focused questions several plot chunks when available.
+    if PLOT_QUESTION.search(query) and any(hit.get("source") == "Wikipedia RU" for hit in hits):
+        preferred = [(number, hit) for number, hit in numbered_hits if hit.get("source") == "Wikipedia RU"]
+        numbered_context = preferred[:4]
+    else:
+        numbered_context = numbered_hits[:4]
     context = "\n\n".join(
-        f"[{index}] Источник: {hit['title']} ({hit['url']})\n{hit['text'][:1600]}"
-        for index, hit in enumerate(context_hits, start=1)
+        f"[{index}] Источник: {hit['title']} ({hit['url']})\n{hit['text'][:4200]}"
+        for index, hit in numbered_context
     )
     system = (
         "Ты помощник по истории кино. Отвечай только на русском языке, даже если источник на английском. "
-        "Опирайся только на предоставленные источники. Не цитируй английские предложения без перевода. "
-        "После каждого фактического утверждения обязательно указывай номер источника в квадратных скобках. "
-        "Например: «Режиссёр фильма — Кристофер Нолан [1].» Ответ без маркеров [1], [2] и т. п. недопустим. "
-        "Сначала дай прямой ответ на вопрос, затем добавь только нужное пояснение. Не более трёх коротких предложений. "
-        "Если данных о факте, человеке, съёмках или фильме нет, прямо скажи, что сведения не найдены. "
-        "Не придумывай факты и не приписывай людям работы без подтверждения. "
-        "Отделяй сюжет фильма от истории его создания. Пиши кратко и ясно."
+        "Для ответа о сюжете сначала внимательно сверь подробные пересказы серий; они важнее кратких карточек каталога. "
+        "Если источники не раскрывают нужную деталь, можешь осторожно дополнить ответ своими знаниями, но обозначь неуверенность. "
+        "Не додумывай мотивы, угрозы, принадлежность героя к группировке и другие факты, которых нет в тексте источника. "
+        "Если принадлежность или причина поступка не названа прямо, не приписывай её персонажу. Точно сохраняй родство, отношения и последовательность событий. "
+        "Не превращай угрозу исключения из группировки в угрозу убийством. Не цитируй английские предложения без перевода. "
+        "Ставь ссылку [номер] рядом с фактами, подтверждёнными источником; не приписывай источнику то, чего в нём нет. "
+        "Сначала ответь прямо. На вопрос о сюжете дай содержательное объяснение причин и последовательности событий, обычно 5–8 предложений, "
+        "сохраняя важные детали и предупреждая о спойлерах, если раскрываешь развязку. На простой вопрос отвечай короче. "
+        "Не смешивай персонажей и сюжетные линии. Не добавляй сведения о создании фильма, если об этом не спросили. "
+        "Перед отправкой проверь, что каждое предложение подтверждается источниками и не противоречит им. "
+        "Пиши естественно и ясно, как собеседник, а не как справочник."
     )
     try:
         response = httpx.post(
@@ -124,7 +140,7 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
                 ],
                 "stream": False,
                 "think": False,
-                "options": {"temperature": 0.15, "num_ctx": 4096, "num_predict": 220},
+                "options": {"temperature": 0.25, "num_ctx": 8192, "num_predict": 700},
             }, timeout=180,
         )
         response.raise_for_status()
@@ -132,7 +148,8 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
         if not answer:
             raise ValueError("Ollama returned an empty response")
         cited = [int(value) for value in re.findall(r"\[(\d+)\]", answer)]
-        if not cited or any(value > len(context_hits) or value < 1 for value in cited):
+        allowed_citations = {index for index, _ in numbered_context}
+        if not cited or any(value not in allowed_citations for value in cited):
             raise ValueError("Ollama returned an answer without valid source markers")
         return answer, "qwen"
     except (httpx.HTTPError, ValueError):
