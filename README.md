@@ -152,10 +152,8 @@ python -m evaluation.evaluate
 ## Демо и ограничения
 
 - **[Видео рабочего сценария](demo/movie-rag-demo.mp4)** показывает поиск «Интерстеллара», выбор фильма, вопрос, русский ответ и источник. Сценарий записи доступен в **[scripts/record_demo.py](scripts/record_demo.py)**.
-- Первая загрузка нового фильма зависит от скорости TMDB и Wikipedia. Если Wikipedia временно не ответила, повторите `POST /ingest` с `"refresh":true`: описание TMDB останется доступным, но может быть недостаточно для подробного сюжетного ответа.
-- Локальная модель может ошибаться даже при наличии ссылок. На MacBook Air M4/16 ГБ один проверенный короткий ответ занял 2,8 секунды, более сложные — 8–13 секунд; это не гарантированная задержка.
+- Локальная модель может ошибаться даже при наличии ссылок.
 - База, ключ TMDB и загруженные модели остаются на компьютере и не входят в репозиторий.
-
 ---
 
 <sub>This product uses the TMDB API but is not endorsed or certified by TMDB. Данные: <a href="https://developer.themoviedb.org/docs/getting-started">TMDB</a> и <a href="https://www.mediawiki.org/wiki/API:REST_API/Reference">Wikipedia</a>. Генерация: <a href="https://ollama.com/">Ollama</a> и <a href="https://ollama.com/library/qwen3.5">Qwen3.5</a>.</sub>
