@@ -10,4 +10,5 @@ models/
 *.mov
 demo/*
 !demo/movie-rag-demo.mp4
+!demo/answer.png
 .DS_Store
