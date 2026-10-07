@@ -28,36 +28,36 @@ def main() -> None:
             options["executable_path"] = os.environ["DEMO_CHROME"]
         browser = playwright.chromium.launch(**options)
         context = browser.new_context(
-            viewport={"width": 1440, "height": 900},
+            viewport={"width": 1280, "height": 800},
             device_scale_factor=1,
             record_video_dir=str(OUT),
-            record_video_size={"width": 1440, "height": 900},
+            record_video_size={"width": 1280, "height": 800},
         )
         page = context.new_page()
         video = page.video
         started = time.monotonic()
         page.goto(URL, wait_until="networkidle")
-        page.wait_for_timeout(1800)
-
-        page.locator("#discover-input").fill("Интерстеллар")
-        page.locator("#discover-button").click()
-        page.locator(".discovery-item").first.wait_for()
-        page.wait_for_timeout(1600)
-        page.locator(".discovery-item").first.click()
-        page.get_by_text("Материалы готовы. Задайте вопрос.").wait_for()
         page.wait_for_timeout(900)
 
-        page.locator("#question").fill("Кто снял фильм и что известно о его создании?")
+        page.locator("#discover-input").fill("Интерстеллар")
+        page.locator(".discovery-item").first.wait_for()
+        page.locator('.filter-chip[data-filter="movie"]').click()
+        page.wait_for_timeout(1200)
+        page.locator(".discovery-item").first.click()
+        page.get_by_text("Можно задавать вопрос.").wait_for(timeout=30_000)
+        page.wait_for_timeout(600)
+
+        page.locator("#question").fill("Как Купер передал Мёрф данные из чёрной дыры?")
         page.locator("#question").scroll_into_view_if_needed()
-        page.wait_for_timeout(1400)
+        page.wait_for_timeout(1100)
         page.locator("#ask-button").click()
-        loading = time.monotonic() - started
-        page.locator("#answer-panel:not(.hidden)").wait_for(timeout=240_000)
+        page.get_by_text("Ответ готов.").wait_for(timeout=90_000)
         answer_ready = time.monotonic() - started
+        if not page.locator(".source-card").count():
+            raise RuntimeError("The demo answer has no visible sources")
         page.locator("#answer-panel").scroll_into_view_if_needed()
-        page.wait_for_timeout(8500)
+        page.wait_for_timeout(3500)
         page.screenshot(path=str(OUT / "answer.png"), full_page=True)
-        finished = time.monotonic() - started
         context.close()
         browser.close()
         raw = Path(video.path())
@@ -66,22 +66,14 @@ def main() -> None:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise SystemExit(f"Recording saved to {raw}; install ffmpeg to create MP4")
-    # Keep a brief loading moment, then skip the model's idle inference time.
-    first_end = min(loading + 2.0, answer_ready)
-    second_start = max(first_end, answer_ready - 0.5)
-    filters = (
-        f"[0:v]trim=start=0:end={first_end:.3f},setpts=PTS-STARTPTS[v0];"
-        f"[0:v]trim=start={second_start:.3f}:end={finished:.3f},"
-        "setpts=PTS-STARTPTS[v1];"
-        "[v0][v1]concat=n=2:v=1:a=0[v]"
-    )
     subprocess.run([
-        ffmpeg, "-y", "-i", str(raw), "-filter_complex", filters,
-        "-map", "[v]", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        ffmpeg, "-y", "-i", str(raw),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
         "-crf", "24", "-movflags", "+faststart", str(output),
     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    raw.unlink()
     print(f"Video: {output}")
-    print(f"Model wait removed: {max(0, second_start - first_end):.1f} s")
+    print(f"Answer ready after {answer_ready:.1f} s of recording")
 
 
 if __name__ == "__main__":
