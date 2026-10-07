@@ -8,7 +8,7 @@ import numpy as np
 
 from movie_rag.answer import PLOT_QUESTION, _validated_answer, answer_guidance, extractive_answer, film_time_dilation_answer, generate, grounded_fallback, identity_evidence, parasites_family_answer, person_conflict_answer, plot_evidence, scene_meaning_answer, structured_metadata_answer, symbolic_object_answer
 from movie_rag.evidence import evidence_context
-from movie_rag.app import diverse_hits
+from movie_rag.app import diverse_hits, home
 from movie_rag.chunking import chunks
 from movie_rag.db import Database
 from movie_rag.search import SearchEngine
@@ -70,6 +70,13 @@ class DatabaseTests(unittest.TestCase):
 
 
 class AnswerTests(unittest.TestCase):
+    def test_home_versions_assets_and_disables_cache(self):
+        response = home()
+        html = response.body.decode("utf-8")
+        self.assertIn("/static/style.css?v=", html)
+        self.assertIn("/static/app.js?v=", html)
+        self.assertEqual(response.headers["cache-control"], "no-store, max-age=0")
+
     def test_semantic_passages_used_only_when_lexical_evidence_is_weak(self):
         hits = [{"source": "Wikipedia RU", "title": "История", "text":
                  "Герой скрывал правду о своём происхождении. В конце он открыл тайну семье."}]
