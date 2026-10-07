@@ -3,13 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from threading import Lock, Thread
 import logging
+import json
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .answer import CONFLICT_QUESTION, PLOT_QUESTION, generate, warm_model
+from .answer import generate, stream_generate, warm_model
 from .config import settings
 from .db import Database
 from .search import SearchEngine
@@ -146,6 +147,27 @@ def search(
             "semantic_error": search_engine.semantic_error}
 
 
+def _answer_hits(q: str, entity_type: str | None, entity_id: int | None, mode: str) -> list[dict]:
+    entity = (entity_type, str(entity_id)) if entity_type and entity_id else None
+    if entity and not db.get_entity(*entity):
+        try:
+            ingestor.ingest(entity[0], int(entity[1]))
+        except SourceError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return diverse_hits(
+        search_engine.search(q, limit=24, mode=mode, entity=entity),
+        limit=10, per_url_limit=5,
+    )
+
+
+def _answer_sources(hits: list[dict]) -> list[dict]:
+    return [
+        {"number": i, "title": hit["title"], "url": hit["url"], "source": hit["source"],
+         "excerpt": hit["text"][:550], "score": hit["score"], "chunk_id": hit["chunk_id"]}
+        for i, hit in enumerate(hits, 1)
+    ]
+
+
 @app.get("/ask")
 def ask(
     q: str = Query(min_length=2, max_length=500),
@@ -153,23 +175,26 @@ def ask(
     entity_id: int | None = Query(None, gt=0),
     mode: str = Query("hybrid", pattern="^(hybrid|bm25|semantic)$"),
 ):
-    entity = (entity_type, str(entity_id)) if entity_type and entity_id else None
-    if entity and not db.get_entity(*entity):
-        try:
-            ingestor.ingest(entity[0], int(entity[1]))
-        except SourceError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-    plot_question = bool(PLOT_QUESTION.search(q))
-    conflict_question = bool(CONFLICT_QUESTION.search(q)) and bool(entity and entity[0] == "person")
-    hits = diverse_hits(
-        search_engine.search(q, limit=18, mode=mode, entity=entity),
-        per_url_limit=6 if plot_question or conflict_question else 2,
-    )
+    hits = _answer_hits(q, entity_type, entity_id, mode)
     answer, answer_mode = generate(q, hits, settings)
-    sources = [
-        {"number": i, "title": hit["title"], "url": hit["url"], "source": hit["source"],
-         "excerpt": hit["text"][:550], "score": hit["score"], "chunk_id": hit["chunk_id"]}
-        for i, hit in enumerate(hits, 1)
-    ]
+    sources = _answer_sources(hits)
     return {"query": q, "answer": answer, "answer_mode": answer_mode,
             "sources": sources, "semantic_error": search_engine.semantic_error}
+
+
+@app.get("/ask/stream")
+def ask_stream(
+    q: str = Query(min_length=2, max_length=500),
+    entity_type: str | None = Query(None, pattern="^(movie|tv|person)$"),
+    entity_id: int | None = Query(None, gt=0),
+    mode: str = Query("hybrid", pattern="^(hybrid|bm25|semantic)$"),
+):
+    hits = _answer_hits(q, entity_type, entity_id, mode)
+
+    def events():
+        yield json.dumps({"type": "sources", "sources": _answer_sources(hits),
+                          "semantic_error": search_engine.semantic_error}, ensure_ascii=False) + "\n"
+        for event in stream_generate(q, hits, settings):
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(events(), media_type="application/x-ndjson")

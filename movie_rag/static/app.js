@@ -97,16 +97,58 @@ async function ask() {
   try {
     const params = new URLSearchParams({q:query,mode:$('search-mode').value});
     if (state.selected) { params.set('entity_type',state.selected.type); params.set('entity_id',state.selected.id); }
-    const data = await getJSON(`/ask?${params}`);
+    const response = await fetch(`/ask/stream?${params}`);
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `Ошибка ${response.status}`);
+    }
+    if (!response.body) throw new Error('Браузер не поддерживает потоковые ответы.');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+    let draft = '';
+    let citations = {};
+    let sourceList = [];
+    let finished = false;
+    const showCitedSources = answer => {
+      const used = new Set([...answer.matchAll(/\[(\d+)\]/g)].map(match => citations[match[1]]).filter(Boolean));
+      const visible = sourceList.filter(source => used.has(source.number));
+      renderSources(visible);
+      $('sources-column').classList.toggle('hidden', visible.length === 0);
+    };
     $('answer-panel').classList.remove('hidden');
-    $('sources-column').classList.remove('hidden');
     document.querySelector('.workspace').classList.add('has-answer');
     $('answer-title').textContent = 'Ответ';
-    $('answer-mode').textContent = data.answer_mode === 'qwen' ? 'Qwen · локальная модель' : data.answer_mode === 'structured' ? 'Ответ по данным каталога' : 'Выжимка из источников';
-    const sources = uniqueSources(data.sources);
-    renderAnswer(data.answer, sources.citations);
-    renderSources(sources.list);
-    setStatus(data.semantic_error || 'Ответ готов.', Boolean(data.semantic_error));
+    $('answer-text').textContent = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      pending += decoder.decode(value, {stream:true});
+      let cut;
+      while ((cut = pending.indexOf('\n')) !== -1) {
+        const line = pending.slice(0, cut);
+        pending = pending.slice(cut + 1);
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === 'sources') {
+          const sources = uniqueSources(event.sources);
+          citations = sources.citations;
+          sourceList = sources.list;
+          setStatus('Формируем ответ…');
+        } else if (event.type === 'delta') {
+          draft += event.text;
+          renderAnswer(draft, citations);
+          showCitedSources(draft);
+        } else if (event.type === 'done') {
+          finished = true;
+          renderAnswer(event.answer, citations);
+          showCitedSources(event.answer);
+          $('answer-mode').textContent = event.answer_mode === 'qwen' ? 'Qwen · локальная модель' : event.answer_mode === 'structured' ? 'Ответ по данным каталога' : 'Выжимка из источников';
+          setStatus('Ответ готов.');
+        }
+      }
+    }
+    if (!finished) throw new Error('Соединение прервалось до завершения ответа.');
     $('answer-panel').scrollIntoView({behavior:'smooth',block:'nearest'});
   } catch(error) { setStatus(error.message, true); }
   finally { button.disabled = false; }

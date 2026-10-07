@@ -163,29 +163,17 @@ class SearchEngine:
             retrieval_query += " причина мотив решение последствия"
         if re.search(r"кто\s+(?:такой|такая|такое|это)|кем\s+(?:является|приходится)", lowered_query):
             retrieval_query += " роль персонаж ученик ученица студент девушка сын дочь актёр актриса"
-        if re.search(r"замедлен\w*\s+времен|времен\w*\s+замедлен|планет\w*\s+миллер|миллер\w*\s+планет", lowered_query):
-            # This film detail is present in the English plot source, while the
-            # Russian article has only a brief synopsis of Miller's planet.
-            retrieval_query += " Miller planet time severely dilated gravity black hole Gargantua"
-        if re.search(r"семь\w* ким|семь\w*.*дом.*пак|ким.*дом.*пак|семь\w*.*пак", lowered_query):
-            retrieval_query += " устроился репетитором поддельная рекомендация отец водитель семья Ким проникла дом Паков tutor forged recommendation"
         if re.search(r"что означа|значени\w*|символиз|смысл", lowered_query):
             retrieval_query += " значение символ смысл талисман предмет образ значение в фильме"
-            if re.search(r"кам(?:е)?н|талисман", lowered_query):
-                retrieval_query += " подарок принести богатство семье"
-        if re.search(r"запах|морщ|носом|пахнет", lowered_query):
-            retrieval_query += " описывали его запах отвратительный зажимает нос бешенство ударяет ножом"
+        if re.search(r"двойник|двойн|клонир|клон|копи[яи]", lowered_query):
+            retrieval_query += " клон клонирование копия двойник"
         if entity and entity[0] == "person" and re.search(
             r"конфликт|скандал|инцидент|ссор|разноглас|драк|стычк|обвин|арест|задерж|судебн|хулиган",
             lowered_query,
         ):
             retrieval_query += " инциденты скандал арест суд драка хулиганство укусил ударил обвинение"
         lexical = self.db.bm25(retrieval_query, candidates, entity) if mode in {"hybrid", "bm25"} else []
-        character_alias_query = bool(
-            entity and entity[0] == "tv"
-            and re.search(r"\b(?:маратик\w*|maratik\w*)\b", query.lower())
-        )
-        semantic = self.vector(retrieval_query, candidates, entity) if mode == "semantic" or mode == "hybrid" and not character_alias_query else []
+        semantic = self.vector(retrieval_query, candidates, entity) if mode in {"semantic", "hybrid"} else []
         ranks: dict[int, dict] = {}
         for rank, (ident, score) in enumerate(lexical, start=1):
             ranks.setdefault(ident, {"score": 0.0, "bm25_score": None, "semantic_score": None})

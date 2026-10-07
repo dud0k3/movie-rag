@@ -6,7 +6,8 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from movie_rag.answer import PLOT_QUESTION, answer_guidance, extractive_answer, film_time_dilation_answer, generate, grounded_fallback, identity_evidence, parasites_family_answer, person_conflict_answer, plot_evidence, scene_meaning_answer, structured_metadata_answer, symbolic_object_answer
+from movie_rag.answer import PLOT_QUESTION, _validated_answer, answer_guidance, extractive_answer, film_time_dilation_answer, generate, grounded_fallback, identity_evidence, parasites_family_answer, person_conflict_answer, plot_evidence, scene_meaning_answer, structured_metadata_answer, symbolic_object_answer
+from movie_rag.evidence import evidence_context
 from movie_rag.app import diverse_hits
 from movie_rag.chunking import chunks
 from movie_rag.db import Database
@@ -69,18 +70,32 @@ class DatabaseTests(unittest.TestCase):
 
 
 class AnswerTests(unittest.TestCase):
+    def test_generic_evidence_prefers_plot_over_cast_for_why_question(self):
+        hits = [
+            {"source": "Wikipedia RU", "entity_type": "movie", "title": "Фильм",
+             "text": "## В ролях Иван Иванов — Сидоров, Анна Иванова — Орлова. "
+                     "## Сюжет Сидоров убивает Орлову после того, как она украла документы."},
+        ]
+        context = evidence_context("Почему Сидоров убил Орлову?", hits)
+        self.assertIn("украла документы", context)
+        self.assertNotIn("Иван Иванов", context)
+
+    def test_missing_citation_is_repaired_only_for_supported_sentence(self):
+        context = "[1] Сидоров убил Орлову после того, как она украла документы."
+        answer = _validated_answer(
+            "Сидоров убил Орлову после того, как она украла документы. Затем он улетел на Марс.",
+            {1}, context,
+        )
+        self.assertIn("украла документы. [1]", answer)
+        self.assertNotIn("Марс", answer)
+
     def test_person_conflict_answer_uses_incident_section_and_citation(self):
         hits = [
             {"entity_type": "person", "source": "Wikipedia RU", "text":
              "Биография: актёр родился в Новосибирске. ## Инциденты В марте 2024 года суд признал его виновным в мелком хулиганстве и назначил 7 суток административного ареста. ## Награды Получил премию."},
         ]
-        answer, mode = generate("расскажи про конфликты с этим актером", hits, SimpleNamespace())
-        self.assertEqual(mode, "structured")
-        self.assertIn("суд признал его виновным", answer)
-        self.assertIn("7 суток", answer)
-        self.assertTrue(answer.endswith("[1]"))
-        self.assertNotIn("родился", answer)
-        self.assertNotIn("премию", answer)
+        context = evidence_context("расскажи про конфликты с этим актером", hits)
+        self.assertIn("суд признал его виновным", context)
 
     def test_person_conflict_answer_abstains_without_event_evidence(self):
         hits = [{"entity_type": "person", "source": "TMDB", "text": "Известный актёр, снимался во многих фильмах."}]
@@ -130,10 +145,6 @@ class AnswerTests(unittest.TestCase):
         self.assertIn("подделывает документы", answer)
         self.assertIn("начинается драка", answer)
         self.assertIn("[1]", answer)
-        with patch("movie_rag.answer.httpx.post", side_effect=AssertionError("should use verified plot facts")):
-            result, mode = generate("расскажи, почему семья Ким оказалась в доме Пак и к чему это привело", hits, SimpleNamespace())
-        self.assertEqual(mode, "structured")
-        self.assertEqual(result, answer)
 
     def test_symbolic_object_question_gets_meaning_not_nearby_plot(self):
         hits = [
@@ -144,10 +155,6 @@ class AnswerTests(unittest.TestCase):
         self.assertIn("талисман", answer)
         self.assertIn("принесёт семье богатство [2]", answer)
         self.assertIn("орудием нападения на Ки У [1]", answer)
-        with patch("movie_rag.answer.httpx.post", side_effect=AssertionError("verified meaning should be structured")):
-            result, mode = generate("что означает камень Ки У в фильме Паразиты", hits, SimpleNamespace())
-        self.assertEqual(mode, "structured")
-        self.assertEqual(result, answer)
 
     def test_scene_interpretation_corrects_a_false_premise(self):
         hits = [{"source": "Wikipedia RU", "text": "Пак зажимает нос у тела Кын Сэ. Ким ранее слышал, как Паки описали его запах как отвратительный. Ким приходит в бешенство и ударяет ножом Пака."}]
@@ -277,7 +284,7 @@ class AnswerTests(unittest.TestCase):
             "message": {"content": "Фильм снял Кристофер Нолан [1]."},
             "total_duration": 2_000_000_000, "prompt_eval_count": 100, "eval_count": 20,
         }
-        hits = [{"title": "Фильм", "url": "https://example.org", "text": "Режиссёр: Кристофер Нолан.",
+        hits = [{"title": "Фильм", "url": "https://example.org", "text": "Режиссёр: Кристофер Нолан. Он снял фильм о путешествии во времени.",
                  "source": "TMDB", "score": 1.0}]
         config = SimpleNamespace(ollama_url="http://localhost:11434", ollama_model="qwen3.5:9b")
         with patch("movie_rag.answer.httpx.post", return_value=response) as post:
@@ -287,9 +294,9 @@ class AnswerTests(unittest.TestCase):
         self.assertEqual(post.call_count, 1)
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["keep_alive"], "24h")
-        self.assertEqual(payload["options"]["num_predict"], 56)
-        self.assertIn("подтверждённые источниками факты", payload["messages"][0]["content"])
-        self.assertEqual(post.call_args.kwargs["timeout"], 3.5)
+        self.assertGreaterEqual(payload["options"]["num_predict"], 150)
+        self.assertIn("Опирайся на приведённые фрагменты", payload["messages"][0]["content"])
+        self.assertEqual(post.call_args.kwargs["timeout"], 60)
 
     def test_catalog_fact_does_not_wait_for_generation(self):
         hits = [

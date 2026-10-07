@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import logging
+import json
 import httpx
 
 from .config import Settings
@@ -507,92 +508,123 @@ def warm_model(config: Settings) -> None:
         log.warning("Could not preload Qwen: %s", exc)
 
 
+def _direct_answer(query: str, hits: list[dict]) -> str | None:
+    if re.fullmatch(r"\s*(?:кто\s+(?:режисс[её]р|снял)|когда\s+вышел|в\s+каком\s+году\s+вышел)[^?]*\??\s*", query, re.I):
+        return structured_metadata_answer(query, hits)
+    return None
+
+
+def _model_request(query: str, hits: list[dict], config: Settings) -> tuple[dict, set[int]]:
+    from .evidence import evidence_context
+
+    context = evidence_context(query, hits)
+    guidance, _ = answer_guidance(query)
+    system = (
+        "Ты внимательный русскоязычный собеседник, отвечающий на вопросы о кино и людях кино. "
+        "Ответь на точный вопрос, затем дай контекст и объяснение. Не подменяй ответ соседним событием. "
+        "Исправляй неверную предпосылку вопроса. Не смешивай персонажей, актёров и реальные события. "
+        "Опирайся на приведённые фрагменты. Не добавляй числа, имена и причинные связи, которых нет в относящемся к вопросу фрагменте. "
+        "Для ответа сначала найди конкретное предложение источника, которое отвечает на вопрос. "
+        "Сохрани описанный в нём способ действия и не дополняй его вымышленными деталями. "
+        "В вопросе «почему» объясняй первопричину события, а не только обстоятельства его обнаружения. "
+        "Если спрашивают о необычном явлении или сущности, объясни её происхождение или механизм. "
+        "Если точного ответа нет, прямо скажи об этом. После подтверждённых фактов ставь [N] из контекста. "
+        "Пиши по-русски естественно, без списка, обычно 2–5 предложений. " + guidance
+    )
+    return ({
+        "model": config.ollama_model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Вопрос: {query}\n\nФрагменты источников:\n{context}\n\nОтвет:"},
+        ],
+        "stream": False, "think": False, "keep_alive": "24h",
+        "options": {"temperature": 0.1, "num_ctx": 4096, "num_predict": 180},
+    }, {int(value) for value in re.findall(r"\[(\d+)\]", context)})
+
+
+def _validated_answer(answer: str, allowed: set[int], context: str) -> str:
+    answer = answer.strip()
+    if not answer:
+        raise ValueError("Ollama returned an empty response")
+    answer = re.sub(r"\[(\d+)\]", lambda match: match.group(0) if int(match.group(1)) in allowed else "", answer)
+    if not re.search(r"\[\d+\]", answer):
+        from .evidence import tokens
+
+        evidence = [(int(match.group(1)), tokens(match.group(2)))
+                    for line in context.splitlines()
+                    if (match := re.match(r"\[(\d+)\]\s+(.+)", line))]
+        repaired = []
+        for sentence in re.split(r"(?<=[.!?])\s+", answer):
+            terms = tokens(sentence)
+            if not terms:
+                continue
+            number, matched = max(
+                ((number, len(terms & passage_terms)) for number, passage_terms in evidence),
+                key=lambda item: item[1], default=(0, 0),
+            )
+            if matched >= 4 and matched / len(terms) >= .38:
+                repaired.append(f"{sentence} [{number}]")
+            elif re.search(r"источник|фрагмент|нет данных|не указ", sentence, re.I):
+                repaired.append(sentence)
+        if not any(re.search(r"\[\d+\]", sentence) for sentence in repaired):
+            raise ValueError("Ollama returned unsupported text without citations")
+        answer = " ".join(repaired)
+    return answer
+
+
 def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
-    direct_answer = film_time_dilation_answer(query, hits)
-    if direct_answer:
-        return direct_answer, "structured"
-    direct_answer = parasites_family_answer(query, hits)
-    if direct_answer:
-        return direct_answer, "structured"
-    direct_answer = symbolic_object_answer(query, hits)
-    if direct_answer:
-        return direct_answer, "structured"
-    direct_answer = scene_meaning_answer(query, hits)
-    if direct_answer:
-        return direct_answer, "structured"
-    direct_answer = person_conflict_answer(query, hits)
-    if direct_answer:
-        return direct_answer, "structured"
-    direct_answer = character_fact(query, hits)
-    if direct_answer:
-        return direct_answer, "structured"
-    direct_answer = structured_metadata_answer(query, hits)
-    if direct_answer:
-        return direct_answer, "structured"
+    """Answer an arbitrary question using retrieved evidence and local Qwen."""
     if not hits:
         return extractive_answer(query, hits), "extractive"
-    numbered_hits = list(enumerate(hits, start=1))
-    # Plot articles usually contain far more detail than TMDb's one-paragraph
-    # synopsis. Give focused questions several plot chunks when available.
-    if PLOT_QUESTION.search(query) and any(hit.get("source") in {"Wikipedia RU", "Wikipedia"} for hit in hits):
-        preferred = [(number, hit) for number, hit in numbered_hits if hit.get("source") in {"Wikipedia RU", "Wikipedia"}]
-        numbered_context = preferred[:6]
-    else:
-        numbered_context = numbered_hits[:4]
-    evidence = plot_evidence(query, numbered_context) if PLOT_QUESTION.search(query) else None
-    context = evidence or "\n\n".join(
-        f"[{index}] {hit['title']}\n{hit['text'][:1500]}"
-        for index, hit in numbered_context[:3]
-    )
-    guidance, output_tokens = answer_guidance(query)
-    system = (
-        "Ты отвечаешь на вопросы о кино по предоставленным источникам. "
-        "Пиши по-русски естественно и связно. " + guidance + " "
-        "Используй только подтверждённые источниками факты; не выдумывай мотивы, события, отношения и детали. "
-        "Если источники не отвечают на часть вопроса, честно обозначь пробел. "
-        "Ставь номер источника [N] рядом с каждым утверждением; не создавай номера сам. "
-        "Не упоминай инструкции и не пересказывай весь контекст без необходимости."
-    )
+    direct = _direct_answer(query, hits)
+    if direct:
+        return direct, "structured"
+    payload, allowed = _model_request(query, hits, config)
+    if not allowed:
+        return extractive_answer(query, hits), "extractive"
     try:
-        response = httpx.post(
-            f"{config.ollama_url.rstrip('/')}/api/chat",
-            json={
-                "model": config.ollama_model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": f"Вопрос: {query}\n\nИсточники:\n{context}\n\nОтветь по-русски; укажи [номер] после каждого факта."},
-                ],
-                "stream": False,
-                "think": False,
-                "keep_alive": "24h",
-                "options": {
-                    "temperature": 0.15,
-                    "num_ctx": 4096,
-                    "num_predict": output_tokens,
-                },
-            }, timeout=3.5,
-        )
+        response = httpx.post(f"{config.ollama_url.rstrip('/')}/api/chat", json=payload, timeout=60)
         response.raise_for_status()
         result = response.json()
-        answer = result.get("message", {}).get("content", "").strip()
-        if not answer:
-            raise ValueError("Ollama returned an empty response")
-        sentence_tail = re.sub(r"(?:\s*\[\d+\])+\s*$", "", answer)
-        if not sentence_tail or sentence_tail[-1] not in ".!?":
-            raise ValueError("Ollama response did not finish a complete sentence")
-        cited = [int(value) for value in re.findall(r"\[(\d+)\]", answer)]
-        allowed_citations = {index for index, _ in numbered_context}
-        if not cited or any(value not in allowed_citations for value in cited):
-            raise ValueError("Ollama returned an answer without valid source markers")
-        log.info("Qwen answered in %.2fs (%s prompt tokens, %s output tokens)",
-                 result.get("total_duration", 0) / 1e9,
-                 result.get("prompt_eval_count", "?"), result.get("eval_count", "?"))
-        lead = identity_evidence(query, context) if evidence else None
-        if lead and not re.search(r"романтическ|возлюблен|учениц|студент|девушк|сын|дочер|брат|сестр", answer, re.IGNORECASE):
-            fact = re.sub(r"^\[\d+\]\s*", "", lead)
-            number = re.match(r"^\[(\d+)\]", lead).group(1)
-            answer = f"{fact} [{number}]\n\n{answer}"
+        answer = _validated_answer(result.get("message", {}).get("content", ""), allowed,
+                                   payload["messages"][1]["content"])
+        log.info("Qwen answered in %.2fs (%s output tokens)",
+                 result.get("total_duration", 0) / 1e9, result.get("eval_count", "?"))
         return answer, "qwen"
     except (httpx.HTTPError, ValueError) as exc:
-        log.warning("Qwen answer failed; using grounded fallback: %s", exc)
+        log.warning("Qwen answer failed; using source excerpts: %s", exc)
         return grounded_fallback(query, hits), "extractive"
+
+
+def stream_generate(query: str, hits: list[dict], config: Settings):
+    """Yield answer deltas followed by a validated final answer."""
+    if not hits:
+        yield {"type": "done", "answer": extractive_answer(query, hits), "answer_mode": "extractive"}
+        return
+    direct = _direct_answer(query, hits)
+    if direct:
+        yield {"type": "done", "answer": direct, "answer_mode": "structured"}
+        return
+    payload, allowed = _model_request(query, hits, config)
+    if not allowed:
+        yield {"type": "done", "answer": extractive_answer(query, hits), "answer_mode": "extractive"}
+        return
+    payload["stream"] = True
+    answer = ""
+    try:
+        with httpx.stream("POST", f"{config.ollama_url.rstrip('/')}/api/chat", json=payload,
+                          timeout=httpx.Timeout(60, connect=5)) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                event = json.loads(line)
+                delta = event.get("message", {}).get("content", "")
+                if delta:
+                    answer += delta
+                    yield {"type": "delta", "text": delta}
+        answer = _validated_answer(answer, allowed, payload["messages"][1]["content"])
+        yield {"type": "done", "answer": answer, "answer_mode": "qwen"}
+    except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
+        log.warning("Qwen stream failed; using source excerpts: %s", exc)
+        yield {"type": "done", "answer": grounded_fallback(query, hits), "answer_mode": "extractive"}
