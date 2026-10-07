@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f4f6f8">
+  <meta name="theme-color" content="#daebe3">
   <title>Киноархив</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -17,13 +17,13 @@
       <section class="workspace" aria-label="Поиск по киноархиву">
         <div class="main-column">
           <div class="query-panel">
-            <div class="field">
+            <div class="field picker-field" id="entity-picker">
               <label class="sr-only" for="discover-input">Фильм, сериал или человек</label>
               <div class="search-row">
-                <input id="discover-input" type="search" autocomplete="off" placeholder="Найти фильм, сериал или человека" aria-label="Поиск фильма, сериала или человека">
-                <button id="discover-button" class="button button-secondary" type="button">Найти</button>
+                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 5 5"/></svg>
+                <input id="discover-input" type="search" autocomplete="off" placeholder="Фильм, сериал или актёр" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="option-list" aria-label="Поиск фильма, сериала или актёра">
               </div>
-              <div id="discover-results" class="discover-results" aria-live="polite"></div>
+              <div id="discover-results" class="discover-results hidden"></div>
               <div id="selected" class="selected hidden"></div>
             </div>
 

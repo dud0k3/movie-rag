@@ -176,7 +176,8 @@ def ask(
     mode: str = Query("hybrid", pattern="^(hybrid|bm25|semantic)$"),
 ):
     hits = _answer_hits(q, entity_type, entity_id, mode)
-    answer, answer_mode = generate(q, hits, settings)
+    scorer = search_engine.score_passages if mode != "bm25" else None
+    answer, answer_mode = generate(q, hits, settings, scorer)
     sources = _answer_sources(hits)
     return {"query": q, "answer": answer, "answer_mode": answer_mode,
             "sources": sources, "semantic_error": search_engine.semantic_error}
@@ -194,7 +195,8 @@ def ask_stream(
     def events():
         yield json.dumps({"type": "sources", "sources": _answer_sources(hits),
                           "semantic_error": search_engine.semantic_error}, ensure_ascii=False) + "\n"
-        for event in stream_generate(q, hits, settings):
+        scorer = search_engine.score_passages if mode != "bm25" else None
+        for event in stream_generate(q, hits, settings, scorer):
             yield json.dumps(event, ensure_ascii=False) + "\n"
 
     return StreamingResponse(events(), media_type="application/x-ndjson")

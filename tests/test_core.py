@@ -70,6 +70,21 @@ class DatabaseTests(unittest.TestCase):
 
 
 class AnswerTests(unittest.TestCase):
+    def test_semantic_passages_used_only_when_lexical_evidence_is_weak(self):
+        hits = [{"source": "Wikipedia RU", "title": "История", "text":
+                 "Герой скрывал правду о своём происхождении. В конце он открыл тайну семье."}]
+        calls = []
+
+        def scorer(query, passages):
+            calls.append(passages)
+            return [0.8 for _ in passages]
+
+        evidence_context("Что заставило персонажа признаться?", hits, semantic_scorer=scorer)
+        self.assertEqual(len(calls), 1)
+        calls.clear()
+        evidence_context("Почему герой скрывал правду?", hits, semantic_scorer=scorer)
+        self.assertFalse(calls)
+
     def test_generic_evidence_prefers_plot_over_cast_for_why_question(self):
         hits = [
             {"source": "Wikipedia RU", "entity_type": "movie", "title": "Фильм",
@@ -80,6 +95,13 @@ class AnswerTests(unittest.TestCase):
         self.assertIn("украла документы", context)
         self.assertNotIn("Иван Иванов", context)
 
+    def test_meaning_question_prioritizes_stated_purpose(self):
+        hits = [{"source": "Wikipedia RU", "title": "Повесть",
+                 "text": "Герой несёт медальон во время опасной поездки. "
+                         "Бабушка подарила ему медальон, который, по задумке, должен принести удачу."}]
+        context = evidence_context("Что означает медальон?", hits)
+        self.assertIn("должен принести удачу", context.splitlines()[0])
+
     def test_missing_citation_is_repaired_only_for_supported_sentence(self):
         context = "[1] Сидоров убил Орлову после того, как она украла документы."
         answer = _validated_answer(
@@ -88,6 +110,15 @@ class AnswerTests(unittest.TestCase):
         )
         self.assertIn("украла документы. [1]", answer)
         self.assertNotIn("Марс", answer)
+
+    def test_unsupported_uncited_claim_is_removed_even_after_a_citation(self):
+        context = "[1] Пилот передал данные дочери через стрелку часов с помощью азбуки Морзе."
+        answer = _validated_answer(
+            "Пилот передал данные дочери через стрелку часов [1]. Затем он сообщил их сыну.",
+            {1}, context,
+        )
+        self.assertIn("дочери", answer)
+        self.assertNotIn("сыну", answer)
 
     def test_person_conflict_answer_uses_incident_section_and_citation(self):
         hits = [

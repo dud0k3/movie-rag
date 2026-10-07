@@ -41,6 +41,19 @@ class SearchEngine:
             self.rebuild()
             self._load_model().encode(["кино"], normalize_embeddings=True, show_progress_bar=False)
 
+    def score_passages(self, query: str, passages: list[str]) -> list[float]:
+        """Semantic similarity for short evidence passages using the warm encoder."""
+        if not passages:
+            return []
+        with self._lock:
+            embeddings = np.asarray(
+                self._load_model().encode(
+                    [query, *passages], normalize_embeddings=True,
+                    show_progress_bar=False, batch_size=32,
+                ), dtype=np.float32,
+            )
+        return (embeddings[1:] @ embeddings[0]).tolist()
+
     def rebuild(self, force: bool = False) -> int:
         with self._lock:
             signature = self.db.chunk_signature()

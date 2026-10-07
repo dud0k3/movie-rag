@@ -389,7 +389,11 @@ def answer_guidance(query: str) -> tuple[str, int]:
     if re.search(r"сравн|чем отличаются|разниц\w* между|похож\w* ли", lowered):
         return "Сравни названные объекты по общим критериям: сначала сходство, затем главное различие. Не добавляй отсутствующие в источниках свойства.", 64
     if re.search(r"что означа|значени\w*|символиз|смысл", lowered):
-        return "Объясни значение предмета или образа по тому, что о нём сказано в источниках; отдели прямой сюжетный факт от толкования.", 48
+        return ("Назови прямо указанное в сюжете назначение предмета или ожидание персонажей от него. "
+                "Это уже часть ответа о значении. Затем, если уместно, дай осторожное толкование и отдели его от факта.", 72)
+    if re.search(r"^(?:а\s+)?как\b", lowered):
+        return ("Ответь одним точным предложением о способе действия и его адресате. "
+                "Не пересказывай другие действия из той же сцены. Сохраняй последовательность событий из источника.", 56)
     if re.search(r"сюжет|что происходит|что случил|что произошло|перескаж|расскажи.*(?:фильм|сериал|серия)|концовк|финал", lowered):
         return "Дай связный пересказ по порядку: кто участвует, что запускает события, ключевые повороты и результат. Не смешивай персонажей и не раскрывай финал, если его не спрашивают.", 72
     if re.search(r"подробн|развернут|расскажи|объясни|истори|конфликт|скандал|инцидент|интересн\w* факт", lowered):
@@ -514,11 +518,13 @@ def _direct_answer(query: str, hits: list[dict]) -> str | None:
     return None
 
 
-def _model_request(query: str, hits: list[dict], config: Settings) -> tuple[dict, set[int]]:
+def _model_request(query: str, hits: list[dict], config: Settings, passage_scorer=None) -> tuple[dict, set[int]]:
     from .evidence import evidence_context
 
-    context = evidence_context(query, hits)
+    context = evidence_context(query, hits, semantic_scorer=passage_scorer)
     guidance, _ = answer_guidance(query)
+    output_tokens = (220 if re.search(r"подробн|развернут|истори|расскажи|сравн|перескаж|сюжет", query, re.I)
+                     else 110 if re.match(r"\s*(?:а\s+)?как\b", query, re.I) else 165)
     system = (
         "Ты внимательный русскоязычный собеседник, отвечающий на вопросы о кино и людях кино. "
         "Ответь на точный вопрос, затем дай контекст и объяснение. Не подменяй ответ соседним событием. "
@@ -526,8 +532,10 @@ def _model_request(query: str, hits: list[dict], config: Settings) -> tuple[dict
         "Опирайся на приведённые фрагменты. Не добавляй числа, имена и причинные связи, которых нет в относящемся к вопросу фрагменте. "
         "Для ответа сначала найди конкретное предложение источника, которое отвечает на вопрос. "
         "Сохрани описанный в нём способ действия и не дополняй его вымышленными деталями. "
+        "Сохраняй точность формулировок: «пытался» не превращай в совершившееся действие, "
+        "предположение — в установленный факт, а отрицание — в утверждение. "
         "В вопросе «почему» объясняй первопричину события, а не только обстоятельства его обнаружения. "
-        "Если спрашивают о необычном явлении или сущности, объясни её происхождение или механизм. "
+        "Если спрашивают о причине, объясни её, а не только место и момент события. "
         "Если точного ответа нет, прямо скажи об этом. После подтверждённых фактов ставь [N] из контекста. "
         "Пиши по-русски естественно, без списка, обычно 2–5 предложений. " + guidance
     )
@@ -538,48 +546,55 @@ def _model_request(query: str, hits: list[dict], config: Settings) -> tuple[dict
             {"role": "user", "content": f"Вопрос: {query}\n\nФрагменты источников:\n{context}\n\nОтвет:"},
         ],
         "stream": False, "think": False, "keep_alive": "24h",
-        "options": {"temperature": 0.1, "num_ctx": 4096, "num_predict": 180},
+        "options": {"temperature": 0.1, "num_ctx": 4096, "num_predict": output_tokens},
     }, {int(value) for value in re.findall(r"\[(\d+)\]", context)})
 
 
 def _validated_answer(answer: str, allowed: set[int], context: str) -> str:
+    """Keep cited claims and repair only sentences with enough source overlap."""
+    from .evidence import tokens
+
     answer = answer.strip()
     if not answer:
         raise ValueError("Ollama returned an empty response")
     answer = re.sub(r"\[(\d+)\]", lambda match: match.group(0) if int(match.group(1)) in allowed else "", answer)
-    if not re.search(r"\[\d+\]", answer):
-        from .evidence import tokens
+    answer = re.sub(r"([.!?])\s+(\[\d+\])", r" \2\1", answer)
+    evidence = [(int(match.group(1)), tokens(match.group(2)))
+                for line in context.splitlines()
+                if (match := re.match(r"\[(\d+)\]\s+(.+)", line))]
+    verified = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n\n+", answer):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if re.search(r"\[\d+\]", sentence):
+            verified.append(sentence)
+            continue
+        if re.search(r"источник|фрагмент|нет данных|не указ", sentence, re.I):
+            verified.append(sentence)
+            continue
+        terms = tokens(sentence)
+        if not terms:
+            continue
+        number, matched = max(
+            ((number, len(terms & passage_terms)) for number, passage_terms in evidence),
+            key=lambda item: item[1], default=(0, 0),
+        )
+        if matched >= 4 and matched / len(terms) >= .38:
+            verified.append(f"{sentence} [{number}]")
+    if not any(re.search(r"\[\d+\]", sentence) for sentence in verified):
+        raise ValueError("Ollama returned unsupported text without citations")
+    return " ".join(verified)
 
-        evidence = [(int(match.group(1)), tokens(match.group(2)))
-                    for line in context.splitlines()
-                    if (match := re.match(r"\[(\d+)\]\s+(.+)", line))]
-        repaired = []
-        for sentence in re.split(r"(?<=[.!?])\s+", answer):
-            terms = tokens(sentence)
-            if not terms:
-                continue
-            number, matched = max(
-                ((number, len(terms & passage_terms)) for number, passage_terms in evidence),
-                key=lambda item: item[1], default=(0, 0),
-            )
-            if matched >= 4 and matched / len(terms) >= .38:
-                repaired.append(f"{sentence} [{number}]")
-            elif re.search(r"источник|фрагмент|нет данных|не указ", sentence, re.I):
-                repaired.append(sentence)
-        if not any(re.search(r"\[\d+\]", sentence) for sentence in repaired):
-            raise ValueError("Ollama returned unsupported text without citations")
-        answer = " ".join(repaired)
-    return answer
 
-
-def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
+def generate(query: str, hits: list[dict], config: Settings, passage_scorer=None) -> tuple[str, str]:
     """Answer an arbitrary question using retrieved evidence and local Qwen."""
     if not hits:
         return extractive_answer(query, hits), "extractive"
     direct = _direct_answer(query, hits)
     if direct:
         return direct, "structured"
-    payload, allowed = _model_request(query, hits, config)
+    payload, allowed = _model_request(query, hits, config, passage_scorer)
     if not allowed:
         return extractive_answer(query, hits), "extractive"
     try:
@@ -596,7 +611,7 @@ def generate(query: str, hits: list[dict], config: Settings) -> tuple[str, str]:
         return grounded_fallback(query, hits), "extractive"
 
 
-def stream_generate(query: str, hits: list[dict], config: Settings):
+def stream_generate(query: str, hits: list[dict], config: Settings, passage_scorer=None):
     """Yield answer deltas followed by a validated final answer."""
     if not hits:
         yield {"type": "done", "answer": extractive_answer(query, hits), "answer_mode": "extractive"}
@@ -605,7 +620,7 @@ def stream_generate(query: str, hits: list[dict], config: Settings):
     if direct:
         yield {"type": "done", "answer": direct, "answer_mode": "structured"}
         return
-    payload, allowed = _model_request(query, hits, config)
+    payload, allowed = _model_request(query, hits, config, passage_scorer)
     if not allowed:
         yield {"type": "done", "answer": extractive_answer(query, hits), "answer_mode": "extractive"}
         return
