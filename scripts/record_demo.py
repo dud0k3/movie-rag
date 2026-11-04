@@ -39,15 +39,15 @@ def main() -> None:
         page.goto(URL, wait_until="networkidle")
         page.wait_for_timeout(900)
 
-        page.locator("#discover-input").fill("Интерстеллар")
+        page.locator("#discover-input").fill("Матрица")
         page.locator(".discovery-item").first.wait_for()
         page.locator('.filter-chip[data-filter="movie"]').click()
         page.wait_for_timeout(1200)
-        page.locator(".discovery-item").first.click()
+        page.get_by_role("option", name="Матрица Фильм · 1999").click()
         page.get_by_text("Можно задавать вопрос.").wait_for(timeout=30_000)
         page.wait_for_timeout(600)
 
-        page.locator("#question").fill("Как Купер передал Мёрф данные из чёрной дыры?")
+        page.locator("#question").fill("Какую таблетку выбрал Нео и что он узнал?")
         page.locator("#question").scroll_into_view_if_needed()
         page.wait_for_timeout(1100)
         page.locator("#ask-button").click()
@@ -56,7 +56,10 @@ def main() -> None:
         if not page.locator(".source-card").count():
             raise RuntimeError("The demo answer has no visible sources")
         page.locator("#answer-panel").scroll_into_view_if_needed()
-        page.wait_for_timeout(3500)
+        if "красн" not in page.locator("#answer-text").inner_text().lower():
+            raise RuntimeError("The demo answer does not identify the red pill")
+        page.locator(".source-excerpts summary").first.click()
+        page.wait_for_timeout(2300)
         page.screenshot(path=str(OUT / "answer.png"), full_page=True)
         context.close()
         browser.close()

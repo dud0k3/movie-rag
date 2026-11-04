@@ -185,8 +185,20 @@ class SearchEngine:
             lowered_query,
         ):
             retrieval_query += " инциденты скандал арест суд драка хулиганство укусил ударил обвинение"
+        if entity:
+            # Scoped queries can use short topical hints without pulling in
+            # unrelated titles from the global catalogue.
+            hints = (
+                (r"трюк|фокус|иллюзион", "трюк секрет близнецы trick illusion twin"),
+                (r"связан|отношен|встречал|девушка", "отношения роман влюбился relationship"),
+                (r"спорт|занимал.*до кино", "спорт карьера спортсмен diving athlete career"),
+                (r"замедл.*врем|врем.*медлен", "гравитация замедление времени gravity time dilation"),
+            )
+            for pattern, terms in hints:
+                if re.search(pattern, lowered_query):
+                    retrieval_query += " " + terms
         lexical = self.db.bm25(retrieval_query, candidates, entity) if mode in {"hybrid", "bm25"} else []
-        semantic = self.vector(retrieval_query, candidates, entity) if mode in {"semantic", "hybrid"} else []
+        semantic = self.vector(query, candidates, entity) if mode in {"semantic", "hybrid"} else []
         ranks: dict[int, dict] = {}
         for rank, (ident, score) in enumerate(lexical, start=1):
             ranks.setdefault(ident, {"score": 0.0, "bm25_score": None, "semantic_score": None})

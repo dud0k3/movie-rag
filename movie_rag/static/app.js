@@ -1,5 +1,5 @@
 const state = { selected: null, results: [], visibleItems: [], filter: 'all', activeIndex: -1,
-  loading: false, searchTimer: null, searchController: null, searchSeq: 0,
+  loading: false, answerController: null, ready: false, searchTimer: null, searchController: null, searchSeq: 0,
   recent: (() => { try { return JSON.parse(localStorage.getItem('movie-rag-recent') || '[]'); } catch { return []; } })() };
 const $ = id => document.getElementById(id);
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -83,6 +83,37 @@ async function discover() {
   }
 }
 
+function showSuggestions(item) {
+  const questions = item?.type === 'person'
+    ? ['Как началась карьера?', 'В каких фильмах снимался?', 'Какие есть награды?']
+    : item?.type === 'tv'
+      ? ['О чём сериал без спойлеров?', 'Кто главные герои?', 'Как снимали сериал?']
+      : ['О чём фильм без спойлеров?', 'Кто сыграл главные роли?', 'Как снимали фильм?'];
+  const row = $('suggestions');
+  row.classList.toggle('hidden', !item);
+  row.replaceChildren();
+  if (!item) return;
+  for (const question of questions) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = question;
+    button.addEventListener('click', () => {
+      $('question').value = question;
+      $('question').focus();
+    });
+    row.append(button);
+  }
+}
+
+function clearAnswer() {
+  state.answerController?.abort();
+  state.answerController = null;
+  $('ask-button').disabled = !state.ready;
+  $('answer-panel').classList.add('hidden');
+  $('sources-column').classList.add('hidden');
+  document.querySelector('.workspace').classList.remove('has-answer');
+}
+
 async function select(item) {
   if (!item) return;
   clearTimeout(state.searchTimer);
@@ -90,6 +121,8 @@ async function select(item) {
   state.searchSeq++;
   state.loading = false;
   state.selected = item;
+  clearAnswer();
+  showSuggestions(item);
   state.recent = [item, ...state.recent.filter(old => old.type !== item.type || old.id !== item.id)].slice(0, 4);
   try { localStorage.setItem('movie-rag-recent', JSON.stringify(state.recent)); } catch {}
   $('discover-input').value = item.title;
@@ -98,6 +131,8 @@ async function select(item) {
   $('selected').innerHTML = `<span>${escapeHtml(item.title)}</span><button id="clear-selected" aria-label="Сбросить выбор">×</button>`;
   $('clear-selected').addEventListener('click', () => {
     state.selected = null;
+    clearAnswer();
+    showSuggestions(null);
     $('selected').classList.add('hidden');
     $('discover-input').value = '';
     $('question').placeholder = 'Спросите о фильме или человеке…';
@@ -113,8 +148,8 @@ async function select(item) {
   setStatus('Загружаем материалы…');
   try {
     await getJSON('/ingest', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({type:item.type,id:item.id}) });
-    setStatus('Можно задавать вопрос.');
-  } catch(error) { setStatus(error.message, true); }
+    if (state.selected === item && !state.answerController) setStatus('Можно задавать вопрос.');
+  } catch(error) { if (state.selected === item && !state.answerController) setStatus(error.message, true); }
 }
 
 function renderSources(sources) {
@@ -125,7 +160,9 @@ function renderSources(sources) {
       <span class="source-meta"><span class="source-number">${source.number}</span><span>${escapeHtml(source.source)}</span></span>
       <span class="source-title">${escapeHtml(source.title)}</span>
       <span class="source-url">${escapeHtml(new URL(source.url).hostname.replace(/^www\./, ''))}</span>
-    </a></article>`).join('') : '<p class="muted">Источники не найдены.</p>';
+    </a>${source.excerpts?.length ? `<details class="source-excerpts">
+      <summary>Фрагменты</summary>${source.excerpts.map(text => `<blockquote>${escapeHtml(text)}</blockquote>`).join('')}
+    </details>` : ''}</article>`).join('') : '<p class="muted">Источники не найдены.</p>';
 }
 
 function uniqueSources(sources) {
@@ -158,11 +195,13 @@ async function ask() {
   document.querySelector('.advanced').open = false;
   const button = $('ask-button');
   button.disabled = true;
+  const controller = new AbortController();
+  state.answerController = controller;
   setStatus('Ищем фрагменты и готовим ответ…');
   try {
     const params = new URLSearchParams({q:query,mode:$('search-mode').value});
     if (state.selected) { params.set('entity_type',state.selected.type); params.set('entity_id',state.selected.id); }
-    const response = await fetch(`/ask/stream?${params}`);
+    const response = await fetch(`/ask/stream?${params}`, { signal: controller.signal });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
       throw new Error(error.detail || `Ошибка ${response.status}`);
@@ -183,7 +222,7 @@ async function ask() {
     };
     $('answer-panel').classList.remove('hidden');
     document.querySelector('.workspace').classList.add('has-answer');
-    $('answer-title').textContent = 'Ответ';
+    $('answer-title').textContent = 'Готовим ответ…';
     $('answer-text').textContent = '';
     while (true) {
       const { value, done } = await reader.read();
@@ -206,6 +245,11 @@ async function ask() {
           showCitedSources(draft);
         } else if (event.type === 'done') {
           finished = true;
+          for (const {number, text} of event.evidence || []) {
+            const source = sourceList.find(item => item.number === citations[number]);
+            if (source) (source.excerpts ||= []).push(text);
+          }
+          $('answer-title').textContent = 'Ответ';
           renderAnswer(event.answer, citations);
           showCitedSources(event.answer);
           $('answer-mode').textContent = event.answer_mode === 'qwen' ? 'Qwen · локальная модель' : event.answer_mode === 'structured' ? 'Ответ по данным каталога' : 'Выжимка из источников';
@@ -215,8 +259,14 @@ async function ask() {
     }
     if (!finished) throw new Error('Соединение прервалось до завершения ответа.');
     $('answer-panel').scrollIntoView({behavior:'smooth',block:'nearest'});
-  } catch(error) { setStatus(error.message, true); }
-  finally { button.disabled = false; }
+  } catch(error) {
+    if (error.name !== 'AbortError') setStatus(error.message, true);
+  } finally {
+    if (state.answerController === controller) {
+      state.answerController = null;
+      button.disabled = false;
+    }
+  }
 }
 
 $('discover-input').addEventListener('focus', renderPicker);
@@ -228,6 +278,8 @@ $('discover-input').addEventListener('input', () => {
   state.searchController?.abort();
   state.searchSeq++;
   state.selected = null;
+  clearAnswer();
+  showSuggestions(null);
   $('selected').classList.add('hidden');
   $('question').placeholder = 'Спросите о фильме или человеке…';
   $('answer-panel').classList.add('hidden');
@@ -268,6 +320,7 @@ async function waitForReady() {
   try {
     const data = await getJSON('/health');
     if (data.ready) {
+      state.ready = true;
       $('ask-button').disabled = false;
       setStatus('Можно задавать вопросы.');
       return;

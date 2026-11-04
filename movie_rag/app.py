@@ -5,6 +5,7 @@ from threading import Lock, Thread
 import hashlib
 import logging
 import json
+import re
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -15,7 +16,7 @@ from .answer import generate, stream_generate, warm_model
 from .config import settings
 from .db import Database
 from .search import SearchEngine
-from .sources import Ingestor, SourceError
+from .sources import Ingestor, SourceError, mentioned_title, title_key
 
 
 db = Database(settings.db_path)
@@ -104,39 +105,44 @@ def health():
             "ready": len(_warmup_done) == 2}
 
 
+def _local_discover(q: str) -> list[dict]:
+    hits = db.bm25(q, limit=18)
+    details = db.chunk_details([ident for ident, _ in hits])
+    results = []
+    seen = set()
+    for ident, _ in hits:
+        hit = details.get(ident)
+        if not hit:
+            continue
+        kind, entity_id = hit["entity_type"], hit["entity_id"]
+        if (kind, entity_id) in seen:
+            continue
+        item = db.get_entity(kind, entity_id)
+        if not item:
+            continue
+        seen.add((kind, entity_id))
+        title = item.get("title_ru") or item.get("name_ru") or item.get("title") or item.get("name") or entity_id
+        results.append({
+            "type": kind, "id": int(entity_id), "title": title,
+            "original_title": item.get("original_title") or item.get("original_name") or title,
+            "year": (item.get("release_date") or item.get("first_air_date") or "")[:4],
+            "summary": item.get("overview_ru") or item.get("overview") or "",
+            "poster_path": item.get("poster_path") or item.get("profile_path"),
+        })
+        if len(results) == 6:
+            break
+    return results
+
+
 @app.get("/discover")
 def discover(q: str = Query(min_length=2, max_length=120)):
     try:
-        results = ingestor.tmdb.search(q)
-        if not results:
-            local_hits = db.bm25(q, limit=12)
-            details = db.chunk_details([ident for ident, _ in local_hits])
-            seen: set[tuple[str, str]] = set()
-            for ident, _ in local_hits:
-                hit = details.get(ident)
-                if not hit:
-                    continue
-                kind, entity_id = hit["entity_type"], hit["entity_id"]
-                key = (kind, entity_id)
-                if key in seen:
-                    continue
-                item = db.get_entity(kind, entity_id)
-                if not item:
-                    continue
-                seen.add(key)
-                title = item.get("title") or item.get("name") or str(entity_id)
-                results.append({
-                    "type": kind, "id": int(entity_id), "title": title,
-                    "original_title": item.get("original_title") or item.get("original_name") or title,
-                    "year": (item.get("release_date") or item.get("first_air_date") or "")[:4],
-                    "summary": item.get("overview_ru") or item.get("overview") or "",
-                    "poster_path": item.get("poster_path"),
-                })
-                if len(results) == 6:
-                    break
-        return {"query": q, "results": results}
+        results = ingestor.tmdb.search(q) or _local_discover(q)
     except SourceError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        results = _local_discover(q)
+        if not results:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"query": q, "results": results}
 
 
 @app.post("/ingest")
@@ -162,11 +168,33 @@ def search(
 
 def _answer_hits(q: str, entity_type: str | None, entity_id: int | None, mode: str) -> list[dict]:
     entity = (entity_type, str(entity_id)) if entity_type and entity_id else None
+    if not entity and (title := mentioned_title(q)):
+        # Only resolve exact titles. Remakes and namesakes should be selected
+        # by the user, since search popularity is not evidence of intent.
+        year_match = re.search(r"\s*\(((?:19|20)\d{2})\)$", title)
+        year = year_match.group(1) if year_match else None
+        name = title[:year_match.start()] if year_match else title
+        key = title_key(name)
+        try:
+            candidates = discover(name)["results"]
+        except HTTPException:
+            candidates = []
+        exact = [
+            item for item in candidates if key in {title_key(item["title"]), title_key(item["original_title"])}
+            and (not year or item["year"] == year)
+        ]
+        if len(exact) != 1:
+            raise HTTPException(status_code=409, detail="Выберите точный фильм, сериал или человека в поиске.")
+        entity = (exact[0]["type"], str(exact[0]["id"]))
     if entity and not db.get_entity(*entity):
         try:
             ingestor.ingest(entity[0], int(entity[1]))
         except SourceError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not entity:
+        entity = db.match_entity(q)
+    if not entity:
+        raise HTTPException(status_code=409, detail="Выберите фильм, сериал или человека в поиске либо укажите точное название в кавычках.")
     return diverse_hits(
         search_engine.search(q, limit=24, mode=mode, entity=entity),
         limit=10, per_url_limit=5,

@@ -84,6 +84,33 @@ class Database:
             ).fetchone()
         return json.loads(row["payload"]) if row else None
 
+    def match_entity(self, query: str) -> tuple[str, str] | None:
+        """Find an exact, unambiguous title or name in a free-form question."""
+        from .sources import title_key
+
+        question = f" {title_key(query)} "
+        with self.connect() as db:
+            rows = db.execute(
+                """SELECT entity_type, entity_id, name,
+                          json_extract(payload, '$.title_ru') AS title_ru,
+                          json_extract(payload, '$.name_ru') AS name_ru,
+                          json_extract(payload, '$.original_title') AS original_title,
+                          json_extract(payload, '$.original_name') AS original_name
+                   FROM entities WHERE entity_type IN ('movie', 'tv', 'person')"""
+            ).fetchall()
+        matches = {}
+        for row in rows:
+            for alias in list(row)[2:]:
+                key = title_key(alias or "")
+                if len(key) >= 4 and f" {key} " in question:
+                    ident = (row["entity_type"], row["entity_id"])
+                    matches[ident] = max(matches.get(ident, 0), len(key))
+        if not matches:
+            return None
+        longest = max(matches.values())
+        best = [entity for entity, length in matches.items() if length == longest]
+        return best[0] if len(best) == 1 else None
+
     def put_document(
         self, *, source: str, source_id: str, entity_type: str, entity_id: str,
         title: str, url: str, text: str, published_at: str | None = None,

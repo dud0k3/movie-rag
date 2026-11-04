@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from datetime import date
 from difflib import SequenceMatcher
 from urllib.parse import quote
@@ -19,6 +21,21 @@ from .db import Database
 USER_AGENT = "MovieRAG-Educational/0.1 (local student project; contact via GitHub repository)"
 
 
+def mentioned_title(query: str) -> str | None:
+    quoted = re.search(r'«([^»]+)»|"([^"]+)"', query)
+    if quoted:
+        return (quoted.group(1) or quoted.group(2)).strip() or None
+    qualified = re.search(
+        r"\b(?:из|в|про|о)\s+(?:фильм[аеу]?|сериал[аеу]?)\s+(.{2,120}?)\s*[?!.]*$",
+        query, re.I,
+    )
+    return qualified.group(1).strip() if qualified else None
+
+
+def title_key(title: str) -> str:
+    return " ".join(re.findall(r"[^\W_]+", title.casefold().replace("ё", "е")))
+
+
 class SourceError(RuntimeError):
     pass
 
@@ -27,7 +44,7 @@ class TMDb:
     def __init__(self, config: Settings):
         self.config = config
         self.client = httpx.Client(
-            base_url="https://api.themoviedb.org/3/", timeout=25,
+            base_url="https://api.themoviedb.org/3/", timeout=httpx.Timeout(8, connect=4),
             headers={"Accept": "application/json", "User-Agent": USER_AGENT},
         )
 
@@ -49,12 +66,19 @@ class TMDb:
                 raise SourceError("TMDb отклонил ключ. Проверьте значение в .env") from exc
             raise SourceError(f"TMDb вернул ошибку {status}") from exc
         except httpx.HTTPError as exc:
-            raise SourceError(f"Не удалось связаться с TMDb: {exc}") from exc
+            raise SourceError("Не удалось связаться с TMDb") from exc
+
+    def _optional_translation(self, path: str, language: str) -> dict:
+        try:
+            return self.get(path, language=language)
+        except SourceError:
+            return {}
 
     def search(self, query: str) -> list[dict]:
         query = query.strip()
         if not query:
             return []
+        query = mentioned_title(query) or query
         data = self.get("search/multi", query=query, language="ru-RU", include_adult="false", page=1)
         output = []
         for row in data.get("results", []):
@@ -71,37 +95,6 @@ class TMDb:
                 "summary": row.get("overview") or row.get("known_for_department") or "",
                 "poster_path": row.get("poster_path") or row.get("profile_path"),
             })
-        if not output:
-            # TMDB cannot resolve character names. If a natural query contains
-            # a series title, try its content words from the end (e.g. “... из
-            # сериала Слово пацана” -> “пацана”) as a lightweight title lookup.
-            ignored = {"кто", "что", "такой", "такая", "из", "о", "об", "сериала", "сериал", "персонаж", "герой", "героя", "героиня", "маратик", "маратика", "марат", "марата", "maratik", "marat"}
-            title_terms = [term for term in re.findall(r"[\w]+", query.lower()) if len(term) >= 4 and term not in ignored]
-            for term in reversed(re.findall(r"[\w]+", query.lower())):
-                if len(term) < 4 or term in ignored:
-                    continue
-                try:
-                    tv_data = self.get("search/tv", query=term, language="ru-RU", include_adult="false", page=1)
-                except SourceError:
-                    break
-                matches = []
-                for row in tv_data.get("results", []):
-                    title = row.get("name") or ""
-                    title_words = re.findall(r"[\w]+", title.lower())
-                    matches_title = lambda word: word in title_words or any(SequenceMatcher(None, word, title_word).ratio() >= 0.8 for title_word in title_words)
-                    if matches_title(term) and all(matches_title(word) for word in title_terms):
-                        matches.append(row)
-                if matches:
-                    for row in matches[:3]:
-                        output.append({
-                            "type": "tv", "id": row.get("id"),
-                            "title": row.get("name") or row.get("original_name") or "",
-                            "original_title": row.get("original_name") or row.get("name") or "",
-                            "year": (row.get("first_air_date") or "")[:4],
-                            "summary": row.get("overview") or "",
-                            "poster_path": row.get("poster_path"),
-                        })
-                    break
         return output
 
     def seed_candidates(self, pages: int = 12) -> list[int]:
@@ -121,15 +114,16 @@ class TMDb:
 
     def movie(self, movie_id: int) -> dict:
         english = self.get(f"movie/{movie_id}", language="en-US", append_to_response="credits,external_ids")
-        russian = self.get(f"movie/{movie_id}", language="ru-RU")
+        russian = self._optional_translation(f"movie/{movie_id}", "ru-RU")
         english["title_ru"] = russian.get("title") or english.get("title")
         english["overview_ru"] = russian.get("overview") or ""
         return english
 
     def person(self, person_id: int) -> dict:
         person = self.get(f"person/{person_id}", language="en-US", append_to_response="combined_credits,external_ids")
-        russian = self.get(f"person/{person_id}", language="ru-RU")
+        russian = self._optional_translation(f"person/{person_id}", "ru-RU")
         person["name_ru"] = russian.get("name") or person.get("name")
+        person["biography_ru"] = russian.get("biography") or ""
         return person
 
     def tv(self, tv_id: int) -> dict:
@@ -137,7 +131,7 @@ class TMDb:
             f"tv/{tv_id}", language="ru-RU",
             append_to_response="aggregate_credits,external_ids",
         )
-        original = self.get(f"tv/{tv_id}", language="en-US")
+        original = self._optional_translation(f"tv/{tv_id}", "en-US")
         series["original_name"] = original.get("original_name") or series.get("original_name")
         series["overview_original"] = original.get("overview") or ""
         return series
@@ -155,21 +149,17 @@ class Wikipedia:
             "Accept": "application/json",
         })
         self.last_request = 0.0
+        self._lock = Lock()
 
     def get(self, path: str, **params):
-        elapsed = time.monotonic() - self.last_request
-        if elapsed < 1.2:
-            time.sleep(1.2 - elapsed)
-        for attempt in range(3):
-            response = self.session.get(self.base_url + path, params=params, timeout=25)
-            self.last_request = time.monotonic()
-            if response.status_code in {429, 503}:
-                retry_after = response.headers.get("Retry-After", "")
-                delay = int(retry_after) if retry_after.isdigit() else min(3 * (attempt + 1), 10)
+        with self._lock:
+            delay = 1.2 - (time.monotonic() - self.last_request)
+            if delay > 0:
                 time.sleep(delay)
-                continue
-            return response
-        return response
+            try:
+                return self.session.get(self.base_url + path, params=params, timeout=(3, 6))
+            finally:
+                self.last_request = time.monotonic()
 
     def search_title(self, name: str, kind: str, year: str = "") -> str | None:
         if self.language == "ru":
@@ -185,28 +175,43 @@ class Wikipedia:
         except (requests.RequestException, ValueError):
             return None
         def normalized(value: str) -> str:
-            value = re.sub(r"\([^)]*\)", "", value.lower().replace("ё", "е"))
+            value = value.lower().replace("ё", "е")
+            if kind == "person":
+                value = re.sub(r"\bмл\.?(?=\W|$)", "младший", value)
+            else:
+                value = re.sub(r"\([^)]*\)", "", value)
             return " ".join(re.findall(r"[\w]+", value))
 
         requested = normalized(name)
+        if not requested:
+            return None
+        kind_pattern = {
+            "movie": r"\b(?:фильм\w*|кинофильм\w*|мультфильм\w*|film)\b",
+            "tv": r"\b(?:телесериал\w*|сериал\w*|series|miniseries|sitcom)\b",
+            "person": r"\b(?:акт[её]р\w*|актрис\w*|режисс[её]р\w*|кинематографист\w*|actor|actress|director|filmmaker)\b",
+        }[kind]
+        ranked = []
         for page in pages:
-            title = page.get("title", "")
-            if normalized(title) == requested and "значения" not in title.lower():
-                return title
-        for page in pages:
-            title = page.get("title", "")
-            description = (page.get("description") or "").lower()
-            if kind in {"movie", "tv"}:
-                film_word = ("фильм" if kind == "movie" else "сериал") if self.language == "ru" else ("film" if kind == "movie" else "series")
-                similarity = SequenceMatcher(None, requested, normalized(title)).ratio()
-                if similarity >= 0.60 and (film_word in description or film_word in title.lower()):
-                    return title
-            elif any(word in description for word in (
-                ("актёр", "актер", "актриса", "режиссёр", "режиссер")
-                if self.language == "ru" else ("actor", "actress", "director", "filmmaker")
-            )):
-                return title
-        return None
+            title = page.get("title") or ""
+            description = page.get("description") or ""
+            hint = f"{title} {description}".lower()
+            if re.search(r"значения|disambiguation", hint):
+                continue
+            found = normalized(title)
+            similarity = SequenceMatcher(None, requested, found).ratio()
+            if kind == "person" and sorted(requested.split()) == sorted(found.split()):
+                similarity = 1.0
+            years = set(re.findall(r"\b(?:19|20)\d{2}\b", description + " " + title))
+            if similarity < .78 or (year and years and year not in years and kind == "movie"):
+                continue
+            typed = bool(re.search(kind_pattern, hint))
+            if not typed and not (similarity == 1 and not description):
+                continue
+            ranked.append((similarity + .12 * (year in years) + .06 * typed, title))
+        ranked.sort(reverse=True)
+        if not ranked or (len(ranked) > 1 and ranked[0][0] == ranked[1][0]):
+            return None
+        return ranked[0][1]
 
     def article(self, title: str) -> tuple[str, str] | None:
         try:
@@ -293,8 +298,8 @@ def movie_document(movie: dict) -> str:
 
 def person_document(person: dict) -> str:
     movie_credits = person.get("combined_credits", {})
-    cast = [row for row in movie_credits.get("cast", []) if row.get("media_type") == "movie"]
-    crew = [row for row in movie_credits.get("crew", []) if row.get("media_type") == "movie"]
+    cast = [row for row in movie_credits.get("cast", []) if row.get("media_type") in {"movie", "tv"}]
+    crew = [row for row in movie_credits.get("crew", []) if row.get("media_type") in {"movie", "tv"}]
     lines = [
         f"Имя: {person.get('name', 'неизвестно')}.",
         f"Русское имя: {person.get('name_ru') or person.get('name', 'неизвестно')}.",
@@ -303,15 +308,17 @@ def person_document(person: dict) -> str:
         f"Место рождения: {person.get('place_of_birth') or 'не указано'}.",
         f"Биография: {person.get('biography') or 'не указана'}",
     ]
+    if person.get("biography_ru"):
+        lines.append("Биография на русском: " + person["biography_ru"])
     if cast:
-        lines.append("Фильмы как актёр: " + "; ".join(
-            f"{row.get('title')} ({(row.get('release_date') or '')[:4]}) — {row.get('character') or 'роль не указана'}"
-            for row in cast[:35] if row.get("title")
+        lines.append("Фильмы и сериалы как актёр: " + "; ".join(
+            f"{row.get('title') or row.get('name')} ({(row.get('release_date') or row.get('first_air_date') or '')[:4]}) — {row.get('character') or 'роль не указана'}"
+            for row in cast[:35] if row.get("title") or row.get("name")
         ))
     if crew:
         lines.append("Работа в съёмочной группе: " + "; ".join(
-            f"{row.get('title')} ({(row.get('release_date') or '')[:4]}) — {row.get('job') or 'участник'}"
-            for row in crew[:35] if row.get("title")
+            f"{row.get('title') or row.get('name')} ({(row.get('release_date') or row.get('first_air_date') or '')[:4]}) — {row.get('job') or 'участник'}"
+            for row in crew[:35] if row.get("title") or row.get("name")
         ))
     return "\n".join(lines)
 
@@ -352,77 +359,68 @@ class Ingestor:
         self.tmdb = TMDb(config)
         self.wiki = Wikipedia(config.wikimedia_contact_url)
         self.wiki_ru = Wikipedia(config.wikimedia_contact_url, "ru")
+        self._ingest_locks = [Lock() for _ in range(32)]
 
-    def enrich_russian(self, kind: str, entity_id: int) -> bool:
-        item = self.db.get_entity(kind, str(entity_id))
-        if not item:
-            return False
-        title = (item.get("title_ru") or item.get("title") or item.get("original_title")
-                 if kind == "movie" else item.get("name_ru") or item.get("name"))
-        year = (item.get("release_date") or item.get("first_air_date") or "")[:4] if kind in {"movie", "tv"} else ""
-        wiki_title = self.wiki_ru.search_title(title, kind, year) if title else None
-        if not wiki_title:
-            return False
-        article = self.wiki_ru.article(wiki_title)
+    def _wiki_document(self, wiki: Wikipedia, name: str, kind: str, year: str, ident: str) -> bool:
+        title = wiki.search_title(name, kind, year) if name else None
+        article = wiki.article(title) if title else None
         if not article:
             return False
-        article_text, url = article
-        self.db.remove_other_source_documents(kind, str(entity_id), "Wikipedia RU", url)
+        text, url = article
+        source = "Wikipedia RU" if wiki.language == "ru" else "Wikipedia"
         self.db.put_document(
-            source="Wikipedia RU", source_id=wiki_title, entity_type=kind,
-            entity_id=str(entity_id), title=wiki_title, url=url, text=article_text,
+            source=source, source_id=title, entity_type=kind,
+            entity_id=ident, title=title, url=url, text=text,
         )
+        self.db.remove_other_source_documents(kind, ident, source, url)
         return True
+
+    def enrich_russian(self, kind: str, entity_id: int) -> bool:
+        ident = str(entity_id)
+        item = self.db.get_entity(kind, ident)
+        if not item:
+            return False
+        name = item.get("title_ru") or item.get("name_ru") or item.get("title") or item.get("name")
+        year = (item.get("release_date") or item.get("first_air_date") or "")[:4]
+        return self._wiki_document(self.wiki_ru, name, kind, year, ident)
 
     def ingest(self, kind: str, entity_id: int, *, refresh: bool = False) -> dict:
         if kind not in {"movie", "tv", "person"}:
             raise ValueError("kind must be movie, tv or person")
-        if not refresh:
-            stored = self.db.get_entity(kind, str(entity_id))
-            if stored:
-                return {"type": kind, "id": entity_id, "title": stored.get("title") or stored.get("name"), "cached": True}
-        if kind == "movie":
-            item = self.tmdb.movie(entity_id)
-            title = item.get("title") or str(entity_id)
-            text = movie_document(item)
-            year = (item.get("release_date") or "")[:4]
-            wiki_title = self.wiki.search_title(item.get("original_title") or title, "movie", year)
-            published = item.get("release_date")
-        elif kind == "tv":
-            item = self.tmdb.tv(entity_id)
-            title = item.get("name") or str(entity_id)
-            text = tv_document(item)
-            year = (item.get("first_air_date") or "")[:4]
-            wiki_title = self.wiki.search_title(title, "tv", year)
-            published = item.get("first_air_date")
-        else:
-            item = self.tmdb.person(entity_id)
-            title = item.get("name") or str(entity_id)
-            text = person_document(item)
-            wiki_title = self.wiki.search_title(title, "person")
-            published = item.get("birthday")
-        self.db.put_entity(kind, str(entity_id), title, item)
+        # Selection can start loading before Ask is clicked. A second request
+        # for the same item waits for both article fetches and reuses the result.
+        with self._ingest_locks[entity_id % len(self._ingest_locks)]:
+            return self._ingest(kind, entity_id, refresh)
+
+    def _ingest(self, kind: str, entity_id: int, refresh: bool) -> dict:
+        ident = str(entity_id)
+        stored = self.db.get_entity(kind, ident)
+        if stored and not refresh:
+            return {"type": kind, "id": entity_id, "title": stored.get("title") or stored.get("name"), "cached": True}
+        fetch, document = {
+            "movie": (self.tmdb.movie, movie_document),
+            "tv": (self.tmdb.tv, tv_document),
+            "person": (self.tmdb.person, person_document),
+        }[kind]
+        item = fetch(entity_id)
+        title = item.get("title") or item.get("name") or ident
+        localized = item.get("title_ru") or item.get("name_ru") or title
+        original = item.get("original_title") or item.get("original_name") or title
+        english = original if re.search(r"[a-z]", original, re.I) else title
+        published = item.get("release_date") or item.get("first_air_date") or item.get("birthday")
+        year = (published or "")[:4] if kind != "person" else ""
         self.db.put_document(
-            source="TMDB", source_id=str(entity_id), entity_type=kind, entity_id=str(entity_id),
-            title=(f"{title} / {item['title_ru']} — TMDB"
-                   if kind == "movie" and item.get("title_ru") and item["title_ru"] != title
-                   else f"{title} — TMDB"),
+            source="TMDB", source_id=ident, entity_type=kind, entity_id=ident,
+            title=f"{title} / {localized} — TMDB" if localized != title else f"{title} — TMDB",
             url=f"https://www.themoviedb.org/{kind}/{entity_id}",
-            text=text, published_at=published,
+            text=document(item), published_at=published,
         )
-        wiki_added = False
-        if wiki_title:
-            article = self.wiki.article(wiki_title)
-            if article:
-                article_text, url = article
-                self.db.put_document(
-                    source="Wikipedia", source_id=wiki_title, entity_type=kind,
-                    entity_id=str(entity_id), title=wiki_title, url=url,
-                    text=article_text,
-                )
-                wiki_added = True
-        ru_added = self.enrich_russian(kind, entity_id)
-        return {"type": kind, "id": entity_id, "title": title, "cached": False,
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            en = workers.submit(self._wiki_document, self.wiki, english, kind, year, ident)
+            ru = workers.submit(self._wiki_document, self.wiki_ru, localized, kind, year, ident)
+            wiki_added, ru_added = en.result(), ru.result()
+        self.db.put_entity(kind, ident, title, item)
+        return {"type": kind, "id": entity_id, "title": localized, "cached": False,
                 "wikipedia": wiki_added, "wikipedia_ru": ru_added}
 
     def seed_popular(self, count: int = 100, progress=None) -> dict:

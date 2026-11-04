@@ -164,3 +164,22 @@ footer small { font-size: 10px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0s !important; }
 }
+
+.suggestions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.suggestions button {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #f4f8f4;
+  color: var(--slate-deep);
+  font-size: 12px;
+}
+.suggestions button:hover, .suggestions button:focus-visible { background: var(--mint); }
+.source-excerpts { padding: 0 14px 12px; color: var(--muted); font-size: 12px; }
+.source-excerpts summary { cursor: pointer; }
+.source-excerpts blockquote {
+  margin: 8px 0 0;
+  padding-left: 9px;
+  border-left: 2px solid var(--sage);
+  color: var(--text);
+}

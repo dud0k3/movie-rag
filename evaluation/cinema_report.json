@@ -1,0 +1,281 @@
+{
+  "environment": "MacBook Air M4, Ollama Qwen3.5 9B, warm search and LLM, same local SQLite snapshot",
+  "method": "One sequential pass for each revision. First text includes draft deltas. Regex checks measure expected facts and abstention, not full factual correctness. At n=8 p95 is the maximum.",
+  "baseline": {
+    "model": "qwen3.5:9b",
+    "corpus": {
+      "documents": 329,
+      "chunks": 2455,
+      "movies": 104,
+      "series": 6,
+      "people": 3
+    },
+    "questions": 8,
+    "fact_checks_passed": 4,
+    "evidence_recall": 1.0,
+    "first_text_p95_s": 5.129,
+    "total_p95_s": 10.89,
+    "rows": [
+      {
+        "id": "director",
+        "answer": "Это фильм режиссёра Кристофера Нолана [1].",
+        "mode": "structured",
+        "fact_check": true,
+        "evidence_recall": true,
+        "citation_ids_valid": true,
+        "cited_urls": [
+          "https://ru.wikipedia.org/wiki/%D0%98%D0%BD%D1%82%D0%B5%D1%80%D1%81%D1%82%D0%B5%D0%BB%D0%BB%D0%B0%D1%80"
+        ],
+        "retrieval_s": 0.357,
+        "first_text_s": 0.358,
+        "total_s": 0.358
+      },
+      {
+        "id": "time",
+        "answer": "Время на планете Миллер шло медленнее из-за близости к чёрной дыре Гаргантюа, что приводило к значительному замедлению времени [1]. В результате этого эффекта, когда Купер и Брэнд возвращались с планеты, для Ромилли, остававшегося на корабле, прошло уже 23 года. [1]",
+        "mode": "qwen",
+        "fact_check": false,
+        "evidence_recall": true,
+        "citation_ids_valid": true,
+        "cited_urls": [
+          "https://ru.wikipedia.org/wiki/%D0%98%D0%BD%D1%82%D0%B5%D1%80%D1%81%D1%82%D0%B5%D0%BB%D0%BB%D0%B0%D1%80"
+        ],
+        "retrieval_s": 0.38,
+        "first_text_s": 4.822,
+        "total_s": 9.548
+      },
+      {
+        "id": "twist",
+        "answer": "В финале выясняется, что Тедди на самом деле был Эндрю Леддисом, бывшим маршалом федеральных служб, который уже два года находится в клинике после убийства собственной жены. [6] Доктор Коули объясняет ему эту ситуацию, подтверждая, что «Тедди» — это лишь псевдоним, под которым скрывается пациент клиники № 67 [6].[3]",
+        "mode": "qwen",
+        "fact_check": true,
+        "evidence_recall": true,
+        "citation_ids_valid": true,
+        "cited_urls": [
+          "https://en.wikipedia.org/wiki/Shutter_Island_%28film%29",
+          "https://ru.wikipedia.org/wiki/%D0%9E%D1%81%D1%82%D1%80%D0%BE%D0%B2_%D0%BF%D1%80%D0%BE%D0%BA%D0%BB%D1%8F%D1%82%D1%8B%D1%85_%28%D1%84%D0%B8%D0%BB%D1%8C%D0%BC%29"
+        ],
+        "retrieval_s": 0.237,
+        "first_text_s": 4.489,
+        "total_s": 9.643
+      },
+      {
+        "id": "prestige",
+        "answer": "В предоставленных фрагментах нет информации о том, как именно Борден выполнял трюк с телепортацией; в источниках лишь описывается его представление «Перемещения человека» и саботаж этого трюка Энджиером [6].",
+        "mode": "qwen",
+        "fact_check": false,
+        "evidence_recall": true,
+        "citation_ids_valid": true,
+        "cited_urls": [
+          "https://ru.wikipedia.org/wiki/%D0%9F%D1%80%D0%B5%D1%81%D1%82%D0%B8%D0%B6_%28%D1%84%D0%B8%D0%BB%D1%8C%D0%BC%29"
+        ],
+        "retrieval_s": 0.185,
+        "first_text_s": 3.945,
+        "total_s": 7.29
+      },
+      {
+        "id": "matrix",
+        "answer": "В предоставленных фрагментах не указано, какую именно таблетку выбрал Нео и что он узнал в результате этого выбора. Текст лишь описывает условия предложения Морфеуса: синяя таблетка возвращает Нео в реальность с воспоминанием всего как сна, а красная позволяет увидеть истину о глубине «кроличьей норы». [1]",
+        "mode": "qwen",
+        "fact_check": true,
+        "evidence_recall": true,
+        "citation_ids_valid": true,
+        "cited_urls": [
+          "https://ru.wikipedia.org/wiki/%D0%9C%D0%B0%D1%82%D1%80%D0%B8%D1%86%D0%B0_%28%D1%84%D0%B8%D0%BB%D1%8C%D0%BC%29"
+        ],
+        "retrieval_s": 0.269,
+        "first_text_s": 1.812,
+        "total_s": 6.312
+      },
+      {
+        "id": "series",
+        "answer": "После этого события Марат продолжает общаться с ней вопреки правилам банды, что приводит к тому, что его выгоняют из группировки и избивают Турбо. [7] В итоге Айгуль погибает, о чём Марат узнаёт в школе, а дома ему кричат Вова, но он не слышит эту новость [3].[1][7]",
+        "mode": "qwen",
+        "fact_check": false,
+        "evidence_recall": true,
+        "citation_ids_valid": true,
+        "cited_urls": [
+          "https://ru.wikipedia.org/wiki/%D0%A1%D0%BB%D0%BE%D0%B2%D0%BE_%D0%BF%D0%B0%D1%86%D0%B0%D0%BD%D0%B0._%D0%9A%D1%80%D0%BE%D0%B2%D1%8C_%D0%BD%D0%B0_%D0%B0%D1%81%D1%84%D0%B0%D0%BB%D1%8C%D1%82%D0%B5"
+        ],
+        "retrieval_s": 0.187,
+        "first_text_s": 2.967,
+        "total_s": 9.711
+      },
+      {
+        "id": "actor",
+        "answer": "Согласно источнику, Джейсон Стейтем занимался боевыми искусствами до начала карьеры актёра. Его отец, который был боксёром и гимнастом, обучал сына этому виду спорта, а сам актёр любил боевые искусства и часто использовал своего отца как «грушу» для тренировок. [4] Таким образом, именно боевые искусства были его основным видом спорта в детстве [4].",
+        "mode": "qwen",
+        "fact_check": false,
+        "evidence_recall": true,
+        "citation_ids_valid": true,
+        "cited_urls": [
+          "https://ru.wikipedia.org/wiki/%D0%A1%D1%82%D0%B5%D0%B9%D1%82%D0%B5%D0%BC%2C_%D0%94%D0%B6%D0%B5%D0%B9%D1%81%D0%BE%D0%BD"
+        ],
+        "retrieval_s": 0.18,
+        "first_text_s": 5.129,
+        "total_s": 10.89
+      },
+      {
+        "id": "unknown",
+        "answer": "В предоставленных фрагментах нет информации о PIN-коде банковской карты Купера, поэтому ответить на этот вопрос невозможно. В источниках упоминаются только координаты НАСА, двоичный код географических координат и передача данных азбукой Морзе через часы, но не банковские реквизиты персонажа [1].[8][4]",
+        "mode": "qwen",
+        "fact_check": true,
+        "evidence_recall": null,
+        "citation_ids_valid": null,
+        "cited_urls": [
+          "https://ru.wikipedia.org/wiki/%D0%98%D0%BD%D1%82%D0%B5%D1%80%D1%81%D1%82%D0%B5%D0%BB%D0%BB%D0%B0%D1%80"
+        ],
+        "retrieval_s": 0.261,
+        "first_text_s": 4.181,
+        "total_s": 8.936
+      }
+    ],
+    "revision": "7f01b5f",
+    "retrieval_p95_s": 0.38,
+    "valid_citation_ids": 7
+  },
+  "submission": {
+    "model": "qwen3.5:9b",
+    "corpus": {
+      "documents": 329,
+      "chunks": 2455,
+      "movies": 104,
+      "series": 6,
+      "people": 3
+    },
+    "questions": 8,
+    "fact_checks_passed": 7,
+    "evidence_recall": 1.0,
+    "valid_citation_ids": 7,
+    "retrieval_p95_s": 0.265,
+    "first_text_p95_s": 5.04,
+    "total_p95_s": 9.101,
+    "rows": [
+      {
+        "id": "director",
+        "answer": "Это фильм режиссёра Кристофера Нолана [1].",
+        "mode": "structured",
+        "fact_check": true,
+        "evidence_recall": true,
+        "citation_ids_valid": true,
+        "cited_urls": [
+          "https://ru.wikipedia.org/wiki/%D0%98%D0%BD%D1%82%D0%B5%D1%80%D1%81%D1%82%D0%B5%D0%BB%D0%BB%D0%B0%D1%80"
+        ],
+        "retrieval_s": 0.073,
+        "first_text_s": 0.074,
+        "total_s": 0.074
+      },
+      {
+        "id": "time",
+        "answer": "Время шло медленнее на планете Миллер из-за её близости к чёрной дыре Гаргантюа, что вызывало значительное замедление времени [2].",
+        "mode": "qwen",
+        "fact_check": false,
+        "evidence_recall": true,
+        "citation_ids_valid": true,
+        "cited_urls": [
+          "https://ru.wikipedia.org/wiki/%D0%98%D0%BD%D1%82%D0%B5%D1%80%D1%81%D1%82%D0%B5%D0%BB%D0%BB%D0%B0%D1%80"
+        ],
+        "retrieval_s": 0.112,
+        "first_text_s": 4.568,
+        "total_s": 6.987,
+        "prompt_tokens": 655,
+        "completion_tokens": 44
+      },
+      {
+        "id": "twist",
+        "answer": "В финале выясняется, что Тедди на самом деле является Эндрю Леддисом, бывшим маршалом федеральных служб, который находится в клинике Эшклифф уже два года после того, как убил свою маниакально-депрессивную жену Долорес Чанал [6][3].",
+        "mode": "qwen",
+        "fact_check": true,
+        "evidence_recall": true,
+        "citation_ids_valid": true,
+        "cited_urls": [
+          "https://en.wikipedia.org/wiki/Shutter_Island_%28film%29",
+          "https://ru.wikipedia.org/wiki/%D0%9E%D1%81%D1%82%D1%80%D0%BE%D0%B2_%D0%BF%D1%80%D0%BE%D0%BA%D0%BB%D1%8F%D1%82%D1%8B%D1%85_%28%D1%84%D0%B8%D0%BB%D1%8C%D0%BC%29"
+        ],
+        "retrieval_s": 0.147,
+        "first_text_s": 4.965,
+        "total_s": 9.101,
+        "prompt_tokens": 730,
+        "completion_tokens": 72
+      },
+      {
+        "id": "prestige",
+        "answer": "Согласно источникам, Борден использовал двойника, который был его идентичным близнецом, разделявшим одну личность [1][4].",
+        "mode": "qwen",
+        "fact_check": true,
+        "evidence_recall": true,
+        "citation_ids_valid": true,
+        "cited_urls": [
+          "https://ru.wikipedia.org/wiki/%D0%9F%D1%80%D0%B5%D1%81%D1%82%D0%B8%D0%B6_%28%D1%84%D0%B8%D0%BB%D1%8C%D0%BC%29"
+        ],
+        "retrieval_s": 0.22,
+        "first_text_s": 4.67,
+        "total_s": 6.566,
+        "prompt_tokens": 670,
+        "completion_tokens": 34
+      },
+      {
+        "id": "matrix",
+        "answer": "Нео выбрал красную таблетку, что позволило ему увидеть реальность Матрицы и узнать, насколько глубока кроличья нора [1].",
+        "mode": "qwen",
+        "fact_check": true,
+        "evidence_recall": true,
+        "citation_ids_valid": true,
+        "cited_urls": [
+          "https://ru.wikipedia.org/wiki/%D0%9C%D0%B0%D1%82%D1%80%D0%B8%D1%86%D0%B0_%28%D1%84%D0%B8%D0%BB%D1%8C%D0%BC%29"
+        ],
+        "retrieval_s": 0.21,
+        "first_text_s": 2.275,
+        "total_s": 4.261,
+        "prompt_tokens": 376,
+        "completion_tokens": 35
+      },
+      {
+        "id": "series",
+        "answer": "Айгуль Ахмерова — девушка Марата Суворова [5].",
+        "mode": "qwen",
+        "fact_check": true,
+        "evidence_recall": true,
+        "citation_ids_valid": true,
+        "cited_urls": [
+          "https://ru.wikipedia.org/wiki/%D0%A1%D0%BB%D0%BE%D0%B2%D0%BE_%D0%BF%D0%B0%D1%86%D0%B0%D0%BD%D0%B0._%D0%9A%D1%80%D0%BE%D0%B2%D1%8C_%D0%BD%D0%B0_%D0%B0%D1%81%D1%84%D0%B0%D0%BB%D1%8C%D1%82%D0%B5"
+        ],
+        "retrieval_s": 0.182,
+        "first_text_s": 4.579,
+        "total_s": 5.633,
+        "prompt_tokens": 665,
+        "completion_tokens": 19
+      },
+      {
+        "id": "actor",
+        "answer": "Джейсон Стейтем занимался футболом и прыжками в воду до кинокарьеры [4].[2][3]",
+        "mode": "qwen",
+        "fact_check": true,
+        "evidence_recall": true,
+        "citation_ids_valid": true,
+        "cited_urls": [
+          "https://en.wikipedia.org/wiki/Jason_Statham",
+          "https://ru.wikipedia.org/wiki/%D0%A1%D1%82%D0%B5%D0%B9%D1%82%D0%B5%D0%BC%2C_%D0%94%D0%B6%D0%B5%D0%B9%D1%81%D0%BE%D0%BD",
+          "https://www.themoviedb.org/person/976"
+        ],
+        "retrieval_s": 0.23,
+        "first_text_s": 3.683,
+        "total_s": 5.696,
+        "prompt_tokens": 475,
+        "completion_tokens": 33
+      },
+      {
+        "id": "unknown",
+        "answer": "Не удалось подтвердить ответ по найденным источникам.",
+        "mode": "unconfirmed",
+        "fact_check": true,
+        "evidence_recall": null,
+        "citation_ids_valid": null,
+        "cited_urls": [],
+        "retrieval_s": 0.265,
+        "first_text_s": 5.04,
+        "total_s": 5.764
+      }
+    ]
+  }
+}
