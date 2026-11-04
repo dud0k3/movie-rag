@@ -99,6 +99,6 @@ python -m uvicorn movie_rag.app:app
 
 ---
 
-Учебный проект для **VK Education**. Источники данных — [TMDB](https://www.themoviedb.org/) и [Wikipedia](https://www.wikipedia.org/).
+Учебный проект. Источники данных — [TMDB](https://www.themoviedb.org/) и [Wikipedia](https://www.wikipedia.org/).
 
 <sub>This product uses the TMDB API but is not endorsed or certified by TMDB.</sub>
