@@ -193,6 +193,8 @@ class SearchEngine:
                 (r"связан|отношен|встречал|девушка", "отношения роман влюбился relationship"),
                 (r"спорт|занимал.*до кино", "спорт карьера спортсмен diving athlete career"),
                 (r"замедл.*врем|врем.*медлен", "гравитация замедление времени gravity time dilation"),
+                (r"выбрался|сбежал|как закончил", "выходит вышел дверь проход покинул exit escape"),
+                (r"перв\w* рол|дебют", "дебют роль режиссёр debut role casting"),
             )
             for pattern, terms in hints:
                 if re.search(pattern, lowered_query):

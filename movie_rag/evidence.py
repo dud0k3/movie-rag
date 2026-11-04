@@ -24,9 +24,58 @@ def tokens(value: str) -> set[str]:
     }
 
 
+# Split only at an explicit question or instruction. Names and titles may
+# contain punctuation, and "и" often joins names within a single question.
+PART_START = (
+    r"кто|что|как|когда|почему|зачем|сколько|какой|какая|какие|кем|чем|где|"
+    r"назови|объясни|расскажи|опиши|укажи|перечисли|в каком году|написал|сыграл"
+)
+
+
+def question_parts(query: str) -> list[str]:
+    parts = re.split(
+        rf"(?:[?;.!]\s+|[, ]+и\s+)(?=(?:{PART_START})\b)", query.strip(), flags=re.I,
+    )
+    return [part.strip(" ,;") for part in parts if part.strip(" ,;")]
+
+
+def planned_context(query: str, hits: list[dict], max_chars: int, semantic_scorer=None) -> str:
+    parts = question_parts(query)
+    if len(parts) == 1:
+        return evidence_context(query, hits, max_chars=max_chars, semantic_scorer=semantic_scorer)
+    # Reserve a share of the context for each subquestion, even when the most
+    # similar passage in the entire article belongs to another subquestion.
+    quota = max_chars // len(parts)
+    groups = [evidence_context(part, hits, max_chars=quota).splitlines()[:3] for part in parts]
+    selected: list[str] = []
+    size = 0
+    for position in range(3):
+        for group in groups:
+            if position >= len(group):
+                continue
+            line = group[position]
+            if line not in selected and size + len(line) + 1 <= max_chars:
+                selected.append(line)
+                size += len(line) + 1
+    return "\n".join(selected)
+
+
+_CYRILLIC = str.maketrans(dict(zip(
+    "абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
+    ("a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "i", "k", "l", "m",
+     "n", "o", "p", "r", "s", "t", "u", "f", "kh", "ts", "ch", "sh", "shch",
+     "", "i", "", "e", "iu", "ia"),
+)))
+
+
+def _romanized(value: str) -> str:
+    return value.casefold().translate(_CYRILLIC).replace("y", "i").replace("j", "i")
+
+
 def split_passages(text: str) -> list[str]:
     """Keep headings with the following paragraph and split long plots."""
     text = re.sub(r"\s*##\s*", "\n## ", text)
+    text = re.sub(r"(?:Персонажи и исполнители:|;)\s+(?=Персонаж )", "\n", text)
     # Old databases flattened headings and paragraphs. Recognize their common
     # labels too, so a later sentence still inherits the section it came from.
     text = re.sub(
@@ -66,6 +115,7 @@ def evidence_context(
     focus_terms: set[str] = set()
     if hits:
         query_terms -= tokens(hits[0].get("title", ""))
+    anchors = query_terms.copy()
     meaning_intent = bool(re.search(r"означа|значени|символ|смысл", query, re.I))
     if meaning_intent:
         query_terms |= tokens("значение символ смысл талисман надежда")
@@ -83,18 +133,37 @@ def evidence_context(
         (r"связан|отношен|встречал|девушка", "роман влюбились девушка отношения"),
         (r"спорт|занимал.*до кино", "спорт спортсмен сборная соревнования прыжки diving national"),
         (r"замедл.*врем|врем.*медлен", "гравитация дыра гаргантюа gravity dilation"),
+        (r"перв\w* рол|дебют|начал\w* карьер", "дебют режиссёр роль сыграл кастинг casting debut"),
+        (r"в итоге|выбрался|как закончил", "вышел выходит покинул сбежал проход дверь escape exit"),
+        (r"до кино|до кинокарьеры", "ранние годы спорт работа карьера early life"),
+        (r"праздник|вечеринк|торжеств|день рождения", "вечеринка торжество праздник день рождения party birthday"),
     ):
         if re.search(pattern, query, re.I):
             query_terms |= tokens(terms)
-    plot_intent = meaning_intent or bool(re.search(r"почему|зачем|сюжет|финал|концовк|убил|погиб|умер|сцен", query, re.I))
+    plot_intent = meaning_intent or bool(re.search(r"почему|зачем|сюжет|финал|концовк|выбрался|в итоге|убил|погиб|умер|сцен", query, re.I))
+    identity_match = re.match(r"кто\s+(?:такой|такая|это)\s+([\w-]+)", query, re.I)
+    identity = _romanized(identity_match[1]) if identity_match else None
+    resolution_intent = bool(re.search(r"выбрался|сбежал|спасся|как.*(?:кончил|уш[её]л)|чем закончил", query, re.I))
+    occasion_intent = bool(re.search(r"праздник|вечеринк|торжеств|день рождения", query, re.I))
+    decisive_event = bool(re.search(r"убил|убий|убива|зарезал|поножов|запах", query, re.I))
     reveal_intent = bool(re.search(r"на самом деле|кем.*финал|личност|тайна|секрет", query, re.I))
     sports_intent = bool(re.search(r"спорт|занимал.*до кино", query, re.I))
     trick_intent = bool(re.search(r"трюк|фокус|иллюзион", query, re.I))
     why_intent = bool(re.search(r"почему|зачем|из-за чего", query, re.I))
+    names = {
+        word.casefold().replace("ё", "е")[:4]
+        for word in re.findall(r"(?<!\w)[А-ЯЁA-Z][а-яёa-z-]{2,}", query)
+        if word.casefold() not in STOP and query.find(word) > 0
+    }
     candidates: list[tuple[float, int, int, str]] = []
     max_overlap = 0
     for number, hit in enumerate(hits, 1):
         passages = split_passages(hit.get("text", ""))
+        anchored = {
+            index for index, passage in enumerate(passages)
+            if names and any(word.casefold().replace("ё", "е")[:4] in names
+                             for word in re.findall(r"\w+", passage))
+        } if why_intent else set()
         for index, passage in enumerate(passages):
             if index and re.search(r"(?:^|^## [\w ]{1,45} )(?:(?:После этого|Затем|Он|Она|Они|Его|Её)\b)", passage):
                 passage = passages[index - 1][-340:] + " " + passage
@@ -102,12 +171,40 @@ def evidence_context(
                 r"объясня|раскрыва|оказыва|выясня|reveal", passage, re.I,
             ):
                 passage += " " + passages[index + 1][:400]
+            if why_intent and index and re.search(r"\b(?:С тех пор|Поэтому|Именно поэтому)\b", passage):
+                passage = f"{passages[index - 1]} {passage}"
             passage_terms = tokens(passage)
             overlap = len(query_terms & passage_terms)
             max_overlap = max(max_overlap, overlap)
             # Retrieval ranking is already hybrid; lexical overlap focuses on
             # the relevant sentence inside a 480-word chunk.
             score = overlap * 3 + 2 / (1 + number * .24)
+            if why_intent:
+                score += 2 * len(anchors & passage_terms)
+                if index in anchored:
+                    score += 7
+                elif index - 1 in anchored or index - 2 in anchored:
+                    score += 4
+            if occasion_intent and re.search(
+                r"вечеринк|торжеств|праздник|день рождения|birthday|party", passage, re.I,
+            ):
+                score += 8
+                if index + 1 < len(passages):
+                    passage = " ".join((passage, passages[index + 1][:340]))
+            if identity and passage.startswith("Персонаж "):
+                role = _romanized(passage.partition(" — ")[0])
+                if re.search(rf"\b{re.escape(identity)}\b", role):
+                    score += 14
+            if resolution_intent and re.search(
+                r"выходит|выходил|вышел|открывает дверь|проход|сбежал|покинул|уплывает|плыв[её]т|escapes?|sails?|exits?", passage, re.I,
+            ):
+                score += 8
+                passage = " ".join(passages[max(0, index - 1):index + 2])
+            if decisive_event and re.search(
+                r"ударяет ножом|ударил ножом|закол|зареза|зажимает нос|зажал нос|stabs?|pinches his nose", passage, re.I,
+            ):
+                score += 9
+                passage = " ".join(passages[max(0, index - 1):index + 1])
             if reveal_intent and re.search(
                 r"объясня|раскрыва|оказыва|выясня|на самом деле|reveals|actually|true identity", passage, re.I,
             ):
@@ -136,9 +233,9 @@ def evidence_context(
                     score += 12
                 elif re.search(r"двойник", passage, re.I):
                     score += 8
-            if why_intent and overlap:
-                if re.search(r"выясня|оказыва|причин", passage, re.I):
-                    score += 10
+            if why_intent and anchors.intersection(passage_terms):
+                if re.search(r"с тех пор|выясня|оказыва|причин", passage, re.I):
+                    score += 7
                 elif re.search(r"потому|поскольку|из-за|так как", passage, re.I):
                     score += 3
             if re.match(r"(?:После|Затем|Он|Она|Они|Его|Её)\b", passage):

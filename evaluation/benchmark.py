@@ -20,11 +20,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--prepare", action="store_true", help="Fetch missing benchmark entities from TMDB and Wikipedia")
+    parser.add_argument("--cases", type=Path, default=Path(__file__).with_name("cinema_cases.json"))
     args = parser.parse_args()
     from movie_rag.app import _answer_hits, db, ingestor, search_engine, settings
     from movie_rag.answer import stream_generate, warm_model
 
-    cases = json.loads(Path(__file__).with_name("cinema_cases.json").read_text())
+    cases = json.loads(args.cases.read_text())
     if args.prepare:
         for kind, ident in dict.fromkeys(tuple(case["entity"]) for case in cases):
             if not db.get_entity(kind, str(ident)):
@@ -49,9 +50,13 @@ def main():
         total = perf_counter() - start
         cited = {int(n) for n in re.findall(r"\[(\d+)\]", answer)}
         evidence = " ".join(hit["text"] for hit in hits)
+        covered = sum(matches(answer, [pattern]) for pattern in facts)
+        contradictions = [pattern for pattern in case.get("forbidden", []) if matches(answer, [pattern])]
         rows.append({
             "id": case["id"], "answer": answer, "mode": event["answer_mode"],
-            "fact_check": matches(answer, facts) if facts else bool(re.search(
+            "facts_covered": covered, "facts_expected": len(facts),
+            "known_contradictions": contradictions,
+            "fact_check": (covered == len(facts) and not contradictions) if facts else bool(re.search(
                 r"не\s+(?:удалось подтвердить|указ|упомин|раскры|сообщ|извест|наш|удалось|привед|фигурир)|нет\b|отсутств", answer, re.I,
             ) and not re.search(r"\b\d{4}\b", answer)),
             "evidence_recall": matches(evidence, facts) if facts else None,
@@ -65,11 +70,14 @@ def main():
     report = {
         "model": settings.ollama_model, "corpus": db.stats(), "questions": len(rows),
         "fact_checks_passed": sum(r["fact_check"] for r in rows),
+        "fact_coverage": sum(r["facts_covered"] for r in rows) / sum(r["facts_expected"] for r in rows),
         "evidence_recall": sum(r["evidence_recall"] for r in answerable) / len(answerable),
         "valid_citation_ids": sum(r["citation_ids_valid"] for r in answerable),
         "retrieval_p95_s": p95([r["retrieval_s"] for r in rows]),
         "first_text_p95_s": p95([r["first_text_s"] for r in rows]),
         "total_p95_s": p95([r["total_s"] for r in rows]),
+        "complete_under_5s": sum(r["total_s"] <= 5 for r in rows),
+        "passed_under_5s": sum(r["total_s"] <= 5 and r["fact_check"] for r in rows),
         "rows": rows,
     }
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")

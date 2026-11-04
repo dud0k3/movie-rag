@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import zip_longest
 from pathlib import Path
 from threading import Lock, Thread
 import hashlib
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field
 from .answer import generate, stream_generate, warm_model
 from .config import settings
 from .db import Database
+from .evidence import question_parts
 from .search import SearchEngine
 from .sources import Ingestor, SourceError, mentioned_title, title_key
 
@@ -195,10 +197,20 @@ def _answer_hits(q: str, entity_type: str | None, entity_id: int | None, mode: s
         entity = db.match_entity(q)
     if not entity:
         raise HTTPException(status_code=409, detail="Выберите фильм, сериал или человека в поиске либо укажите точное название в кавычках.")
-    return diverse_hits(
-        search_engine.search(q, limit=24, mode=mode, entity=entity),
-        limit=10, per_url_limit=5,
-    )
+    hits = search_engine.search(q, limit=24, mode=mode, entity=entity)
+    parts = question_parts(q)[:3]
+    if len(parts) == 1:
+        return diverse_hits(hits, limit=10, per_url_limit=5)
+    # Extra BM25 lookups are cheap and do not re-encode the subquestions.
+    # Explicit semantic mode keeps its own retrieval semantics.
+    submode = "semantic" if mode == "semantic" else "bm25"
+    branches = [search_engine.search(part, limit=4, mode=submode, entity=entity) for part in parts]
+    priority = [hit for round_hits in zip_longest(*branches) for hit in round_hits if hit]
+    unique = {}
+    for hit in [*priority, *hits]:
+        unique.setdefault(hit["chunk_id"], hit)
+    return diverse_hits(list(unique.values()), limit=15, per_url_limit=7)
+
 
 
 def _answer_sources(hits: list[dict]) -> list[dict]:
