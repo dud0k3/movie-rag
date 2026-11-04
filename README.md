@@ -77,6 +77,8 @@ uvicorn movie_rag.app:app
 
 **[Открыть Киноархив](http://127.0.0.1:8000/)** · [Интерактивное API](http://127.0.0.1:8000/docs)
 
+В API доступны загрузка материалов (`POST /ingest`), поиск фрагментов с оценками и ссылками (`GET /search`) и ответ с источниками (`GET /ask`).
+
 ---
 
 Учебный проект для **VK Education**. Источники данных — [TMDB](https://www.themoviedb.org/) и [Wikipedia](https://www.wikipedia.org/).
