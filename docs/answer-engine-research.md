@@ -15,4 +15,4 @@
 | [DuckDuckGo Search Assist](https://duckduckgo.com/duckduckgo-help-pages/results/ai-assisted-answers) | Короткий ответ с одной или двумя ссылками. | Один или два предложения для простого вопроса, ссылки рядом с фактами. |
 | [Claude Research](https://support.claude.com/en/articles/11088861-use-research-on-claude) | Уточняет направление поиска по уже найденному материалу. | Поиск сначала ограничивает корпус, а затем отбирает фрагменты для каждой подтемы. На ответ приходится один вызов генерации. |
 
-Результаты сравнения версий и моделей см. в [замерах проекта](../README.md#quality).
+Результаты сравнения версий и моделей см. в [отчёте сравнения](../evaluation/cinema_depth_report.json).
