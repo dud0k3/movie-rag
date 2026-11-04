@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from movie_rag.answer import _direct_answer, _validated_answer, generate, stream_generate
+from movie_rag.answer import _complete_text, _direct_answer, _validated_answer, generate, stream_generate
 from movie_rag.db import Database
 from movie_rag.evidence import evidence_context, planned_context, question_parts
 from movie_rag.sources import Wikipedia, mentioned_title
@@ -111,6 +111,24 @@ class SubmissionTests(unittest.TestCase):
     def test_validation_preserves_a_title_containing_a_full_stop(self):
         answer = "Айгуль — героиня сериала «Слово пацана. Кровь на асфальте» [2]."
         self.assertEqual(_validated_answer(answer, {2}, "[2] Айгуль Ахмерова."), answer)
+
+    def test_context_labels_evidence_for_each_question(self):
+        hits = [
+            {"text": "Нина боялась моря после того, как её отец утонул в шторме."},
+            {"text": "Нина выбралась из города через закрытый туннель в скале."},
+        ]
+        context = planned_context("Почему Нина боялась моря и как она выбралась из города?", hits, 500)
+        first, second = context.split("Материалы к вопросу 2:", 1)
+        self.assertIn("Материалы к вопросу 1:", first)
+        self.assertIn("[1] Нина боялась моря", first)
+        self.assertIn("[2]", second)
+        self.assertEqual(context.count("[2] Нина выбралась из города"), 1)
+
+    def test_final_answer_drops_incomplete_sentence_after_token_limit(self):
+        text = "Герой вышел через дверь [1]. Затем он отправился"
+        self.assertEqual(_complete_text(text, "length"), "Герой вышел через дверь [1].")
+        self.assertEqual(_complete_text(text, "stop"), text)
+        self.assertEqual(_complete_text("Герой вышел. [1] Затем он", "length"), "Герой вышел. [1]")
 
 
 if __name__ == "__main__":

@@ -1,36 +1,60 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="370" viewBox="0 0 1200 370" role="img" aria-labelledby="title description">
   <title id="title">Киноархив</title>
-  <desc id="description">Поиск по фильмам и людям кино, ответы с источниками</desc>
+  <desc id="description">Поиск по фильмам и людям кино, ответы со ссылками на источники</desc>
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#DAEBE3"/>
-      <stop offset="0.52" stop-color="#F6F7F2"/>
-      <stop offset="1" stop-color="#F9C9AE"/>
+    <linearGradient id="room" x2="100%" y2="100%">
+      <stop stop-color="#142D28"/>
+      <stop offset=".6" stop-color="#1B4037"/>
+      <stop offset="1" stop-color="#22534A"/>
     </linearGradient>
-    <filter id="shadow" x="-25%" y="-40%" width="150%" height="200%">
-      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#657166" flood-opacity="0.12"/>
-    </filter>
+    <radialGradient id="glow">
+      <stop stop-color="#95D1AE" stop-opacity=".45"/>
+      <stop offset="1" stop-color="#95D1AE" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="paper" x2="100%" y2="100%">
+      <stop stop-color="#FFF9EC"/>
+      <stop offset="1" stop-color="#E9F0D9"/>
+    </linearGradient>
+    <pattern id="grid" width="31" height="31" patternUnits="userSpaceOnUse">
+      <path d="M31 0H0v31" fill="none" stroke="#C6E4CB" stroke-opacity=".1"/>
+    </pattern>
+    <clipPath id="frame"><rect width="1200" height="370" rx="24"/></clipPath>
   </defs>
-  <rect width="1200" height="300" rx="28" fill="url(#background)"/>
-  <path d="M0 240C165 173 294 225 455 300H0Z" fill="#79BCCC" opacity="0.27"/>
-  <text x="66" y="119" fill="#303B35" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif" font-size="64" font-weight="700" letter-spacing="-3">Киноархив</text>
-  <text x="69" y="160" fill="#4D5B50" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif" font-size="22">Сюжеты, персонажи и люди кино</text>
-  <rect x="68" y="197" width="104" height="35" rx="17.5" fill="#99CDD8"/>
-  <text x="90" y="221" fill="#303B35" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif" font-size="15" font-weight="600">Поиск</text>
-  <rect x="183" y="197" width="159" height="35" rx="17.5" fill="#CFD6C4"/>
-  <text x="205" y="221" fill="#303B35" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif" font-size="15" font-weight="600">BM25 + векторы</text>
-  <rect x="353" y="197" width="111" height="35" rx="17.5" fill="#F3C3B2"/>
-  <text x="376" y="221" fill="#303B35" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif" font-size="15" font-weight="600">Qwen 3.5</text>
-  <g filter="url(#shadow)">
-    <rect x="833" y="42" width="287" height="76" rx="29" fill="#99CDD8"/>
-    <rect x="801" y="94" width="319" height="76" rx="29" fill="#DAEBE3"/>
-    <rect x="827" y="146" width="293" height="76" rx="29" fill="#F3C3B2"/>
-    <rect x="782" y="198" width="338" height="64" rx="29" fill="#3F6154"/>
-  </g>
-  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif" font-size="16" font-weight="650" fill="#303B35">
-    <text x="860" y="77">01 · Найти фильм</text>
-    <text x="828" y="129">02 · Задать вопрос</text>
-    <text x="854" y="181">03 · Прочитать ответ</text>
-    <text x="812" y="236" fill="#FFFDF9">04 · Открыть источник ↗</text>
+  <g clip-path="url(#frame)">
+    <rect width="1200" height="370" fill="url(#room)"/>
+    <rect x="610" width="590" height="370" fill="url(#grid)"/>
+    <ellipse cx="930" cy="180" rx="365" ry="300" fill="url(#glow)"/>
+    <path d="M0 326H1200M0 327H1200" stroke="#D8EDCF" stroke-opacity=".19"/>
+    <path d="M657 76h-19v19m452-19h19v19M638 275v19h19m452-19h-19v19" fill="none" stroke="#B4DCC0" stroke-opacity=".65" stroke-width="2"/>
+    <g font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+      <rect x="62" y="57" width="26" height="22" rx="5" fill="none" stroke="#F0C79D" stroke-width="1.8"/>
+      <path d="M66 63h18m-18 10h18m-13-13v16m8-16v16" stroke="#F0C79D" stroke-width="1.1"/>
+      <text x="103" y="74" fill="#F0C79D" font-size="16" font-weight="650" letter-spacing="3">ПРОЕКТ ДЛЯ VK EDUCATION</text>
+      <text x="56" y="171" fill="#FBF4E7" font-size="86" font-weight="750" letter-spacing="-5">Киноархив</text>
+      <text x="62" y="219" fill="#D8E8DA" font-size="27" letter-spacing="-.4">Вопросы о кино. Ответы с источниками.</text>
+      <rect x="61" y="253" width="153" height="37" rx="18.5" fill="#D8EDCF"/>
+      <text x="138" y="277" text-anchor="middle" fill="#16382D" font-size="16" font-weight="650">Сюжеты</text>
+      <rect x="225" y="253" width="150" height="37" rx="18.5" fill="#A9D5C8"/>
+      <text x="300" y="277" text-anchor="middle" fill="#16382D" font-size="16" font-weight="650">Персонажи</text>
+      <rect x="386" y="253" width="130" height="37" rx="18.5" fill="#F0C79D"/>
+      <text x="451" y="277" text-anchor="middle" fill="#3C2E23" font-size="16" font-weight="650">Актёры</text>
+      <g transform="translate(670 99)">
+        <rect x="17" y="17" width="412" height="174" rx="22" fill="#102A24" opacity=".43"/>
+        <rect width="412" height="174" rx="22" fill="url(#paper)"/>
+        <path d="M0 42h412" stroke="#C5D6C6"/>
+        <circle cx="24" cy="21" r="4" fill="#C48063"/>
+        <circle cx="38" cy="21" r="4" fill="#D7AA68"/>
+        <circle cx="52" cy="21" r="4" fill="#78A990"/>
+        <text x="74" y="26" fill="#567466" font-size="12" font-weight="700" letter-spacing="1.2">МАТРИЦА · 1999</text>
+        <text x="24" y="73" fill="#203C32" font-size="20" font-weight="720">Какую таблетку выбрал Нео?</text>
+        <text x="24" y="110" fill="#39564A" font-size="17">Красную. Она открыла ему правду</text>
+        <text x="24" y="133" fill="#39564A" font-size="17">о мире, в котором он жил.</text>
+        <rect x="245" y="115" width="33" height="23" rx="7" fill="#C6DCC5"/>
+        <text x="262" y="131" text-anchor="middle" fill="#285042" font-size="13" font-weight="700">[1]</text>
+        <text x="24" y="155" fill="#567466" font-size="12">[1] Wikipedia · «Матрица»</text>
+      </g>
+      <text x="62" y="350" fill="#C0D8CB" font-size="13" font-weight="640" letter-spacing="2">TMDB  /  WIKIPEDIA</text>
+      <text x="1134" y="350" text-anchor="end" fill="#C0D8CB" font-size="13" font-weight="640" letter-spacing="2">ЛОКАЛЬНАЯ QWEN</text>
+    </g>
   </g>
 </svg>

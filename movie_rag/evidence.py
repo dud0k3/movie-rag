@@ -43,21 +43,23 @@ def planned_context(query: str, hits: list[dict], max_chars: int, semantic_score
     parts = question_parts(query)
     if len(parts) == 1:
         return evidence_context(query, hits, max_chars=max_chars, semantic_scorer=semantic_scorer)
-    # Reserve a share of the context for each subquestion, even when the most
-    # similar passage in the entire article belongs to another subquestion.
+    # Keep evidence next to the part it answers. This prevents a person
+    # named in the setup of one event from being substituted into another.
     quota = max_chars // len(parts)
-    groups = [evidence_context(part, hits, max_chars=quota).splitlines()[:3] for part in parts]
-    selected: list[str] = []
-    size = 0
-    for position in range(3):
-        for group in groups:
-            if position >= len(group):
-                continue
-            line = group[position]
-            if line not in selected and size + len(line) + 1 <= max_chars:
-                selected.append(line)
-                size += len(line) + 1
-    return "\n".join(selected)
+    groups = []
+    seen_lines = set()
+    for number, part in enumerate(parts, 1):
+        label = f"Материалы к вопросу {number}:"
+        block = evidence_context(part, hits, max_chars=max(0, quota - len(label) - 32))
+        lines = block.splitlines()
+        fresh = [line for line in lines if line not in seen_lines]
+        reused = sorted({line.split(" ", 1)[0] for line in lines if line in seen_lines})
+        seen_lines.update(lines)
+        if reused:
+            fresh.append(f"См. также: {', '.join(reused)}")
+        if fresh:
+            groups.append(f"{label}\n" + "\n".join(fresh))
+    return "\n".join(groups)
 
 
 _CYRILLIC = str.maketrans(dict(zip(
@@ -146,6 +148,8 @@ def evidence_context(
     resolution_intent = bool(re.search(r"выбрался|сбежал|спасся|как.*(?:кончил|уш[её]л)|чем закончил", query, re.I))
     occasion_intent = bool(re.search(r"праздник|вечеринк|торжеств|день рождения", query, re.I))
     decisive_event = bool(re.search(r"убил|убий|убива|зарезал|поножов|запах", query, re.I))
+    identity_reveal = bool(re.search(r"(?:кем|кто).*на самом деле", query, re.I))
+    debut_intent = bool(re.search(r"перв\w* рол|дебют|начал\w* карьер", query, re.I))
     reveal_intent = bool(re.search(r"на самом деле|кем.*финал|личност|тайна|секрет", query, re.I))
     sports_intent = bool(re.search(r"спорт|занимал.*до кино", query, re.I))
     trick_intent = bool(re.search(r"трюк|фокус|иллюзион", query, re.I))
@@ -185,12 +189,23 @@ def evidence_context(
                     score += 7
                 elif index - 1 in anchored or index - 2 in anchored:
                     score += 4
+            if identity_reveal and re.search(
+                r"в действительности|на самом деле|reveals? that|actually is|is really", passage, re.I,
+            ):
+                score += 13
+            if debut_intent and re.search(
+                r"дебют|предложил.{0,100}роль|режисс[её]р.{0,60}кандидатур|cast him|film debut", passage, re.I,
+            ):
+                score += 8
             if occasion_intent and re.search(
                 r"вечеринк|торжеств|праздник|день рождения|birthday|party", passage, re.I,
             ):
                 score += 8
+                # Take the action at the event over the invitation or plan.
+                if re.search(r"на (?:вечеринке|празднике|торжестве)|at the (?:party|gathering)|party guests", passage, re.I):
+                    score += 12
                 if index + 1 < len(passages):
-                    passage = " ".join((passage, passages[index + 1][:340]))
+                    passage = " ".join((passage, passages[index + 1][:300]))
             if identity and passage.startswith("Персонаж "):
                 role = _romanized(passage.partition(" — ")[0])
                 if re.search(rf"\b{re.escape(identity)}\b", role):
@@ -199,11 +214,17 @@ def evidence_context(
                 r"выходит|выходил|вышел|открывает дверь|проход|сбежал|покинул|уплывает|плыв[её]т|escapes?|sails?|exits?", passage, re.I,
             ):
                 score += 8
-                passage = " ".join(passages[max(0, index - 1):index + 2])
+                # Anchor the decisive action, retaining the route to it.
+                neighbors = passages[max(0, index - 2):index + 2]
+                while len(" ".join(neighbors)) > min(650, max_chars - 12) and len(neighbors) > 2:
+                    neighbors = neighbors[1:]
+                passage = " ".join(neighbors)
             if decisive_event and re.search(
                 r"ударяет ножом|ударил ножом|закол|зареза|зажимает нос|зажал нос|stabs?|pinches his nose", passage, re.I,
             ):
                 score += 9
+                if re.search(r"ударяет ножом|ударил ножом|закол|зареза|stabs?", passage, re.I):
+                    score += 5
                 passage = " ".join(passages[max(0, index - 1):index + 1])
             if reveal_intent and re.search(
                 r"объясня|раскрыва|оказыва|выясня|на самом деле|reveals|actually|true identity", passage, re.I,
@@ -261,15 +282,18 @@ def evidence_context(
             pass
     best_score = candidates[0][0] if candidates else 0
     selected: list[tuple[int, int, str]] = []
-    seen: list[str] = []
+    seen: list[set[str]] = []
     counts: dict[int, int] = {}
     size = 0
     for score, number, index, passage in candidates:
         if best_score > 5 and score < best_score * (.45 if why_intent else .50 if meaning_intent else .56):
             continue
         body = re.sub(r"## (?:сюжет|plot|биография|biography)\b", "", passage, flags=re.I)
-        key = re.sub(r"\W+", "", body.lower())
-        if any(key in previous or previous in key for previous in seen) or counts.get(number, 0) >= 3:
+        key = set(re.findall(r"\w+", body.casefold()))
+        if not key or counts.get(number, 0) >= 3:
+            continue
+        if any(len(key & previous) >= .82 * min(len(key), len(previous))
+               and len(key & previous) >= .60 * max(len(key), len(previous)) for previous in seen):
             continue
         if size + len(passage) > max_chars:
             continue
