@@ -13,8 +13,9 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .answer import generate, stream_generate, warm_model
+from .answer import PLOT_QUESTION, generate, stream_generate, warm_model
 from .config import settings
+from .credits import cast_credit, role_query
 from .db import Database
 from .evidence import question_parts
 from .search import SearchEngine
@@ -197,19 +198,34 @@ def _answer_hits(q: str, entity_type: str | None, entity_id: int | None, mode: s
         entity = db.match_entity(q)
     if not entity:
         raise HTTPException(status_code=409, detail="Выберите фильм, сериал или человека в поиске либо укажите точное название в кавычках.")
+    if role := role_query(q):
+        item = db.get_entity(*entity)
+        credit = cast_credit(item, entity[0], role) if item else None
+        if credit and (catalog := db.catalog_chunk(entity)):
+            actor, character = credit
+            catalog.update(text=f"Персонаж: {character}. Исполнитель: {actor}.",
+                           catalog_answer=f"Эту роль исполняет {actor} [1].", score=1.0)
+            return [catalog]
     hits = search_engine.search(q, limit=24, mode=mode, entity=entity)
     parts = question_parts(q)[:3]
     if len(parts) == 1:
-        return diverse_hits(hits, limit=10, per_url_limit=5)
-    # Extra BM25 lookups are cheap and do not re-encode the subquestions.
-    # Explicit semantic mode keeps its own retrieval semantics.
-    submode = "semantic" if mode == "semantic" else "bm25"
-    branches = [search_engine.search(part, limit=4, mode=submode, entity=entity) for part in parts]
-    priority = [hit for round_hits in zip_longest(*branches) for hit in round_hits if hit]
-    unique = {}
-    for hit in [*priority, *hits]:
-        unique.setdefault(hit["chunk_id"], hit)
-    return diverse_hits(list(unique.values()), limit=15, per_url_limit=7)
+        selected = diverse_hits(hits, limit=10, per_url_limit=5)
+    else:
+        # Extra BM25 lookups are cheap and do not re-encode the subquestions.
+        submode = "semantic" if mode == "semantic" else "bm25"
+        branches = [search_engine.search(part, limit=4, mode=submode, entity=entity) for part in parts]
+        priority = [hit for round_hits in zip_longest(*branches) for hit in round_hits if hit]
+        unique = {}
+        for hit in [*priority, *hits]:
+            unique.setdefault(hit["chunk_id"], hit)
+        selected = diverse_hits(list(unique.values()), limit=15, per_url_limit=7)
+    if PLOT_QUESTION.search(q):
+        ids = [hit["chunk_id"] for hit in selected[:6] if hit["source"].startswith("Wikipedia")]
+        windows = db.chunk_windows(ids)
+        for hit in selected:
+            if window := windows.get(hit["chunk_id"]):
+                hit["context_window"] = window
+    return selected
 
 
 

@@ -530,6 +530,8 @@ _CATALOG_QUESTION = re.compile(
 
 
 def _direct_answer(query: str, hits: list[dict]) -> str | None:
+    if len(hits) == 1 and hits[0].get("catalog_answer"):
+        return hits[0]["catalog_answer"]
     parts = question_parts(query)
     if not all(_CATALOG_QUESTION.match(part) for part in parts):
         return None
@@ -543,7 +545,8 @@ def _model_request(query: str, hits: list[dict], config: Settings, passage_score
     question = "\n".join(f"{i}. {part}" for i, part in enumerate(parts, 1)) if multi else query
     title = next((hit.get("title") for hit in hits if hit.get("source") == "Wikipedia RU"), None)
     title = title or hits[0].get("title", "")
-    subject = f"Объект: {title}\n" if title else ""
+    kind = {"movie": "Фильм", "tv": "Сериал", "person": "Человек"}.get(hits[0].get("entity_type"), "Объект")
+    subject = f"{kind}: {title}\n" if title else ""
     detailed = bool(re.search(r"подробн|разв[её]рнут|истори|расскажи|сравн|перескаж|сюжет|объясни|о ч[её]м|хронологи", query, re.I))
     explanatory = bool(re.search(r"почему|зачем|из-за чего|как\b|что привело|что застав", query, re.I))
     if detailed:
@@ -556,8 +559,8 @@ def _model_request(query: str, hits: list[dict], config: Settings, passage_score
         budget, output_tokens = 1400, 150
         shape = "Объясни причину или способ действия. Добавь результат, только если его спрашивают."
     elif re.match(r"\s*(?:кем|кто)\b.*на самом деле", query, re.I):
-        budget, output_tokens = 1250, 150
-        shape = "Ответь только кто это и какова его роль в развязке. Не добавляй обстоятельства биографии."
+        budget, output_tokens = 930, 85
+        shape = "Одно предложение: назови скрытую личность и положение героя в развязке. Опусти разговоры и события из биографии."
     else:
         budget, output_tokens = 1120, 150
         shape = "Назови запрошенный факт в одном или двух предложениях. Лишние детали опусти."
@@ -723,7 +726,8 @@ def stream_generate(query: str, hits: list[dict], config: Settings, passage_scor
         return
     direct = _direct_answer(query, hits)
     if direct:
-        yield {"type": "done", "answer": direct, "answer_mode": "structured"}
+        yield {"type": "done", "answer": direct, "answer_mode": "structured",
+               "evidence": [{"number": 1, "text": hits[0]["text"]}] if hits[0].get("catalog_answer") else []}
         return
     payload, allowed = _model_request(query, hits, config, passage_scorer)
     if not allowed:

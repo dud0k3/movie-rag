@@ -162,7 +162,7 @@ def evidence_context(
     candidates: list[tuple[float, int, int, str]] = []
     max_overlap = 0
     for number, hit in enumerate(hits, 1):
-        passages = split_passages(hit.get("text", ""))
+        passages = split_passages(hit.get("context_window") or hit.get("text", ""))
         anchored = {
             index for index, passage in enumerate(passages)
             if names and any(word.casefold().replace("ё", "е")[:4] in names

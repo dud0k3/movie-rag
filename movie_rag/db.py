@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from .chunking import chunks
+from .chunking import chunks, context_window
 
 
 SCHEMA = """
@@ -214,6 +214,34 @@ class Database:
             ).fetchall()
         return {int(r["id"]): dict(r) for r in rows}
 
+    def chunk_windows(self, ids: list[int]) -> dict[int, str]:
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        with self.connect() as db:
+            rows = db.execute(
+                f"""SELECT c.id, c.text, prev.text AS prev, following.text AS following
+                    FROM chunks c
+                    LEFT JOIN chunks prev
+                        ON prev.document_id=c.document_id AND prev.position=c.position-1
+                    LEFT JOIN chunks following
+                        ON following.document_id=c.document_id AND following.position=c.position+1
+                    WHERE c.id IN ({placeholders})""", ids,
+            ).fetchall()
+        return {row["id"]: context_window(row["prev"] or "", row["text"], row["following"] or "")
+                for row in rows if row["prev"] or row["following"]}
+
+    def catalog_chunk(self, entity: tuple[str, str]) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT c.id AS chunk_id, c.text, d.title, d.url, d.source, d.entity_type,
+                          d.entity_id, d.published_at
+                   FROM documents d JOIN chunks c ON c.document_id=d.id
+                   WHERE d.entity_type=? AND d.entity_id=? AND d.source='TMDB' AND c.position=0""",
+                entity,
+            ).fetchone()
+        return dict(row) if row else None
+
     def bm25(self, query: str, limit: int = 30, entity: tuple[str, str] | None = None) -> list[tuple[int, float]]:
         import re
         stopwords = {"кто", "что", "как", "где", "когда", "какой", "какая", "какие",
@@ -246,4 +274,16 @@ class Database:
         params.append(limit)
         with self.connect() as db:
             rows = db.execute(sql, params).fetchall()
-        return [(int(r["id"]), float(r["score"])) for r in rows]
+            if entity and len(rows) < min(limit, 4):
+                # Scoped fallback for Russian inflection. Keep exact matches
+                # first, and never broaden the search to other titles.
+                endings = r"(?:ами|ями|ого|его|ому|ему|ыми|ими|ая|яя|ую|юю|ых|их|ой|ей|ам|ям|ом|ем|ов|ев|[аяуюыиео])$"
+                stems = {re.sub(endings, "", term) for term in expanded
+                         if re.fullmatch(r"[а-яё]{5,}", term)}
+                stems = {stem for stem in stems if len(stem) >= 4}
+                if stems:
+                    prefix_match = " OR ".join(f'"{stem}"*' for stem in sorted(stems))
+                    extra = db.execute(sql, [prefix_match, *params[1:]]).fetchall()
+                    exact_ids = {row["id"] for row in rows}
+                    rows.extend(row for row in extra if row["id"] not in exact_ids)
+        return [(int(r["id"]), float(r["score"])) for r in rows[:limit]]

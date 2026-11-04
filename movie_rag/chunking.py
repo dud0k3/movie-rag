@@ -24,3 +24,29 @@ def chunks(text: str, target_words: int = 480, overlap_words: int = 80) -> list[
             break
         start = max(start + 1, end - overlap_words)
     return output
+
+
+def context_window(previous: str, center: str, following: str, margin: int = 460) -> str:
+    """Add nearby text once, accounting for the overlap already in the index."""
+    def overlap(left: list[str], right: list[str]) -> int:
+        for count in range(min(len(left), len(right), 120), 0, -1):
+            if left[-count:] == right[:count]:
+                return count
+        return 0
+
+    words = center.split()
+    before, after = previous.split(), following.split()
+    left_overlap, right_overlap = overlap(before, words), overlap(words, after)
+    head = " ".join(before[:len(before) - left_overlap])
+    tail = " ".join(after[right_overlap:])
+    if len(head) > margin:
+        head = head[-margin:].partition(" ")[2]
+        start = re.search(r"[.!?]\s+", head)
+        if start:
+            head = head[start.end():]
+    if len(tail) > margin:
+        tail = tail[:margin].rsplit(" ", 1)[0]
+        boundaries = list(re.finditer(r"[.!?](?:[»\x22])?(?=\s|$)", tail))
+        if boundaries:
+            tail = tail[:boundaries[-1].end()]
+    return " ".join(part for part in (head, center, tail) if part)
