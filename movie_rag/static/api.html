@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Киноархив · API</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    .api-form { display: grid; gap: 12px; margin: 18px 0; }
+    .api-form select, .api-form input { width: 100%; padding: 8px; }
+    .api-response { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar"><a class="brand" href="/">Киноархив</a></header>
+    <main>
+      <div class="query-panel">
+        <h1>API Киноархива</h1>
+        <p>Попробуйте поиск и ответы на примере «Матрицы».</p>
+        <form class="api-form" id="api-form">
+          <label>Метод
+            <select id="api-method">
+              <option value="search">GET /search — поиск фрагментов</option>
+              <option value="ask">GET /ask — ответ и источники</option>
+              <option value="ingest">POST /ingest — загрузка «Матрицы»</option>
+            </select>
+          </label>
+          <label id="api-query-label">Вопрос
+            <input id="api-query" maxlength="500" value="Какую таблетку выбрал Нео?">
+          </label>
+          <label id="api-refresh-label" hidden><input id="api-refresh" type="checkbox" style="width:auto">
+            Обновить статью Wikipedia (нужен интернет)
+          </label>
+          <button class="button button-primary" type="submit">Выполнить</button>
+        </form>
+        <pre id="api-response" class="api-response" aria-live="polite"></pre>
+        <p><a href="/openapi.json">Схема OpenAPI</a></p>
+      </div>
+    </main>
+  </div>
+  <script>
+    const form = document.getElementById('api-form');
+    const method = document.getElementById('api-method');
+    const response = document.getElementById('api-response');
+    const submit = form.querySelector('button');
+    method.addEventListener('change', () => {
+      const ingest = method.value === 'ingest';
+      document.getElementById('api-query-label').hidden = ingest;
+      document.getElementById('api-refresh-label').hidden = !ingest;
+    });
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      submit.disabled = true;
+      response.textContent = 'Выполняем запрос…';
+      try {
+        const ingest = method.value === 'ingest';
+        const params = new URLSearchParams({ q: document.getElementById('api-query').value });
+        if (method.value === 'ask') {
+          params.set('entity_type', 'movie');
+          params.set('entity_id', '603');
+        }
+        const result = await fetch(ingest ? '/ingest' : `/${method.value}?${params}`, ingest ? {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'movie', id: 603, refresh: document.getElementById('api-refresh').checked }),
+        } : {});
+        response.textContent = `HTTP ${result.status}\n${JSON.stringify(await result.json(), null, 2)}`;
+      } catch (error) {
+        response.textContent = error.message;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

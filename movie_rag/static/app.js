@@ -322,7 +322,12 @@ async function waitForReady() {
     if (data.ready) {
       state.ready = true;
       $('ask-button').disabled = false;
-      setStatus('Можно задавать вопросы.');
+      if (!data.semantic_enabled) {
+        const mode = $('search-mode');
+        mode.value = 'bm25';
+        for (const option of mode.options) option.disabled = option.value !== 'bm25';
+      }
+      setStatus(data.demo_mode ? 'Демо готово. Начните с «Матрицы».' : 'Можно задавать вопросы.');
       return;
     }
   } catch {}

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from importlib.util import find_spec
 import os
 
 from dotenv import load_dotenv
@@ -25,6 +26,14 @@ class Settings:
     @property
     def has_tmdb_auth(self) -> bool:
         return bool(self.tmdb_api_key or self.tmdb_token)
+
+    @property
+    def demo_mode(self) -> bool:
+        return not self.has_tmdb_auth
+
+    @property
+    def semantic_enabled(self) -> bool:
+        return not self.demo_mode and find_spec("sentence_transformers") is not None
 
 
 settings = Settings()

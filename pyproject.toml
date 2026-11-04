@@ -10,11 +10,11 @@ dependencies = [
   "numpy>=1.26",
   "python-dotenv>=1.0",
   "requests>=2.31",
-  "sentence-transformers>=3.0",
   "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
+semantic = ["sentence-transformers>=3.0"]
 faiss = ["faiss-cpu>=1.9"]
 
 [project.scripts]
@@ -28,4 +28,4 @@ build-backend = "setuptools.build_meta"
 include = ["movie_rag*"]
 
 [tool.setuptools.package-data]
-movie_rag = ["static/*"]
+movie_rag = ["static/*", "demo_catalog.json"]

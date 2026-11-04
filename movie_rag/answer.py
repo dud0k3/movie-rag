@@ -688,13 +688,16 @@ def _completed_answer(key: str, answer: str, context: str, usage: dict) -> dict:
     return event
 
 
-def generate(query: str, hits: list[dict], config: Settings, passage_scorer=None) -> tuple[str, str]:
+def generate(query: str, hits: list[dict], config: Settings, passage_scorer=None, *,
+             use_model: bool = True) -> tuple[str, str]:
     """Answer an arbitrary question using retrieved evidence and local Qwen."""
     if not hits:
         return extractive_answer(query, hits), "extractive"
     direct = _direct_answer(query, hits)
     if direct:
         return direct, "structured"
+    if not use_model:
+        return extractive_answer(query, hits), "extractive"
     payload, allowed = _model_request(query, hits, config, passage_scorer)
     if not allowed:
         return extractive_answer(query, hits), "extractive"
@@ -719,7 +722,8 @@ def generate(query: str, hits: list[dict], config: Settings, passage_scorer=None
         return grounded_fallback(query, hits), "extractive"
 
 
-def stream_generate(query: str, hits: list[dict], config: Settings, passage_scorer=None):
+def stream_generate(query: str, hits: list[dict], config: Settings, passage_scorer=None, *,
+                    use_model: bool = True):
     """Yield answer deltas followed by a validated final answer."""
     if not hits:
         yield {"type": "done", "answer": extractive_answer(query, hits), "answer_mode": "extractive"}
@@ -728,6 +732,9 @@ def stream_generate(query: str, hits: list[dict], config: Settings, passage_scor
     if direct:
         yield {"type": "done", "answer": direct, "answer_mode": "structured",
                "evidence": [{"number": 1, "text": hits[0]["text"]}] if hits[0].get("catalog_answer") else []}
+        return
+    if not use_model:
+        yield {"type": "done", "answer": extractive_answer(query, hits), "answer_mode": "extractive"}
         return
     payload, allowed = _model_request(query, hits, config, passage_scorer)
     if not allowed:

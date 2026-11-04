@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from itertools import zip_longest
 from pathlib import Path
-from threading import Lock, Thread
+from threading import Event, Thread
 import hashlib
 import logging
 import json
@@ -17,6 +17,7 @@ from .answer import PLOT_QUESTION, generate, stream_generate, warm_model
 from .config import settings
 from .credits import cast_credit, role_query
 from .db import Database
+from .demo_catalog import seed_demo
 from .evidence import question_parts
 from .search import SearchEngine
 from .sources import Ingestor, SourceError, mentioned_title, title_key
@@ -26,27 +27,22 @@ db = Database(settings.db_path)
 search_engine = SearchEngine(db, settings)
 ingestor = Ingestor(db, settings)
 
-app = FastAPI(title="Movie RAG", version="0.1.0", description="Поиск и ответы о фильмах с источниками")
+app = FastAPI(title="Movie RAG", version="0.1.0", description="Поиск и ответы о фильмах с источниками",
+              docs_url=None, redoc_url=None)
 STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 log = logging.getLogger(__name__)
-_warmup_lock = Lock()
-_warmup_done: set[str] = set()
+_search_ready = Event()
 
 
 @app.on_event("startup")
 def preload_answer_model() -> None:
-    # Keep startup responsive while loading the local model before the first ask.
-    Thread(target=preload_qwen, daemon=True, name="qwen-warmup").start()
-    Thread(target=preload_search_model, daemon=True, name="search-warmup").start()
-
-
-def preload_qwen() -> None:
-    try:
-        warm_model(settings)
-    finally:
-        with _warmup_lock:
-            _warmup_done.add("qwen")
+    if settings.demo_mode:
+        seed_demo(db)
+        return
+    Thread(target=warm_model, args=(settings,), daemon=True, name="qwen-warmup").start()
+    if settings.semantic_enabled:
+        Thread(target=preload_search_model, daemon=True, name="search-warmup").start()
 
 
 def preload_search_model() -> None:
@@ -56,8 +52,7 @@ def preload_search_model() -> None:
     except Exception:
         log.exception("Could not preload the semantic search encoder")
     finally:
-        with _warmup_lock:
-            _warmup_done.add("search")
+        _search_ready.set()
 
 
 def diverse_hits(hits: list[dict], limit: int = 6, per_url_limit: int = 2) -> list[dict]:
@@ -101,11 +96,21 @@ async def disable_static_cache(request, call_next):
     return response
 
 
+@app.get("/docs", include_in_schema=False)
+def docs():
+    return HTMLResponse((STATIC / "api.html").read_text(encoding="utf-8"))
+
+
+def _effective_mode(mode: str) -> str:
+    return mode if settings.semantic_enabled else "bm25"
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "tmdb_configured": settings.has_tmdb_auth,
             "database": db.stats(), "semantic_error": search_engine.semantic_error,
-            "ready": len(_warmup_done) == 2}
+            "demo_mode": settings.demo_mode, "semantic_enabled": settings.semantic_enabled,
+            "ready": not settings.semantic_enabled or _search_ready.is_set()}
 
 
 def _local_discover(q: str) -> list[dict]:
@@ -139,6 +144,8 @@ def _local_discover(q: str) -> list[dict]:
 
 @app.get("/discover")
 def discover(q: str = Query(min_length=2, max_length=120)):
+    if settings.demo_mode:
+        return {"query": q, "results": _local_discover(q)}
     try:
         results = ingestor.tmdb.search(q) or _local_discover(q)
     except SourceError as exc:
@@ -150,6 +157,27 @@ def discover(q: str = Query(min_length=2, max_length=120)):
 
 @app.post("/ingest")
 def ingest(body: IngestRequest):
+    if settings.demo_mode:
+        item = db.get_entity(body.type, str(body.id))
+        if not item:
+            raise HTTPException(status_code=404, detail="Этого объекта нет в локальном каталоге. Для поиска новых объектов добавьте ключ TMDB.")
+        title = item.get("title_ru") or item.get("title") or item.get("name")
+        result = {"type": body.type, "id": body.id, "title": title, "cached": True}
+        if not body.refresh:
+            return result
+        article_title, url = item.get("demo_article"), item.get("demo_url")
+        if not article_title or not url:
+            raise HTTPException(status_code=400, detail="Без ключа TMDB можно обновлять статьи стартового каталога.")
+        article = ingestor.wiki_ru.article(article_title)
+        if not article:
+            raise HTTPException(status_code=503, detail="Не удалось загрузить статью Wikipedia. Локальные материалы доступны.")
+        text, _ = article
+        _, changed = db.put_document(
+            source="Wikipedia RU", source_id=article_title, entity_type=body.type,
+            entity_id=str(body.id), title=title, url=url, text=text,
+            published_at=item.get("release_date") or item.get("first_air_date"),
+        )
+        return {**result, "cached": False, "changed": changed}
     try:
         return ingestor.ingest(body.type, body.id, refresh=body.refresh)
     except SourceError as exc:
@@ -164,8 +192,9 @@ def search(
     entity_id: int | None = Query(None, gt=0),
 ):
     entity = (entity_type, str(entity_id)) if entity_type and entity_id else None
-    hits = search_engine.search(q, limit=top_n, mode=mode, entity=entity)
-    return {"query": q, "mode": mode, "results": hits,
+    effective = _effective_mode(mode)
+    hits = search_engine.search(q, limit=top_n, mode=effective, entity=entity)
+    return {"query": q, "mode": effective, "results": hits,
             "semantic_error": search_engine.semantic_error}
 
 
@@ -190,12 +219,18 @@ def _answer_hits(q: str, entity_type: str | None, entity_id: int | None, mode: s
             raise HTTPException(status_code=409, detail="Выберите точный фильм, сериал или человека в поиске.")
         entity = (exact[0]["type"], str(exact[0]["id"]))
     if entity and not db.get_entity(*entity):
+        if settings.demo_mode:
+            raise HTTPException(status_code=404, detail="Этого объекта нет в локальном каталоге.")
         try:
             ingestor.ingest(entity[0], int(entity[1]))
         except SourceError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not entity:
         entity = db.match_entity(q)
+    if not entity and settings.demo_mode:
+        matches = _local_discover(q)
+        if len(matches) == 1:
+            entity = (matches[0]["type"], str(matches[0]["id"]))
     if not entity:
         raise HTTPException(status_code=409, detail="Выберите фильм, сериал или человека в поиске либо укажите точное название в кавычках.")
     if role := role_query(q):
@@ -244,9 +279,10 @@ def ask(
     entity_id: int | None = Query(None, gt=0),
     mode: str = Query("hybrid", pattern="^(hybrid|bm25|semantic)$"),
 ):
+    mode = _effective_mode(mode)
     hits = _answer_hits(q, entity_type, entity_id, mode)
     scorer = search_engine.score_passages if mode != "bm25" else None
-    answer, answer_mode = generate(q, hits, settings, scorer)
+    answer, answer_mode = generate(q, hits, settings, scorer, use_model=not settings.demo_mode)
     sources = _answer_sources(hits)
     return {"query": q, "answer": answer, "answer_mode": answer_mode,
             "sources": sources, "semantic_error": search_engine.semantic_error}
@@ -259,13 +295,14 @@ def ask_stream(
     entity_id: int | None = Query(None, gt=0),
     mode: str = Query("hybrid", pattern="^(hybrid|bm25|semantic)$"),
 ):
+    mode = _effective_mode(mode)
     hits = _answer_hits(q, entity_type, entity_id, mode)
 
     def events():
         yield json.dumps({"type": "sources", "sources": _answer_sources(hits),
                           "semantic_error": search_engine.semantic_error}, ensure_ascii=False) + "\n"
         scorer = search_engine.score_passages if mode != "bm25" else None
-        for event in stream_generate(q, hits, settings, scorer):
+        for event in stream_generate(q, hits, settings, scorer, use_model=not settings.demo_mode):
             yield json.dumps(event, ensure_ascii=False) + "\n"
 
     return StreamingResponse(events(), media_type="application/x-ndjson")
