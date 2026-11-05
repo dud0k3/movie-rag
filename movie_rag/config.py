@@ -21,6 +21,7 @@ class Settings:
     )
     ollama_model: str = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
     ollama_url: str = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
+    offline: bool = os.getenv("MOVIE_RAG_OFFLINE", "").lower() in {"1", "true", "yes"}
     wikimedia_contact_url: str = os.getenv("WIKIMEDIA_CONTACT_URL", "").strip()
 
     @property
@@ -33,7 +34,7 @@ class Settings:
 
     @property
     def semantic_enabled(self) -> bool:
-        return not self.demo_mode and find_spec("sentence_transformers") is not None
+        return not self.offline and find_spec("sentence_transformers") is not None
 
 
 settings = Settings()

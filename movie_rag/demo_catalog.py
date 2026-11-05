@@ -14,6 +14,12 @@ def _records() -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def starter_cards() -> list[dict]:
+    return [{"type": row["type"], "id": row["id"], "title": row["title"],
+             "original_title": row["original_title"], "year": (row["date"] or "")[:4],
+             "poster_path": None} for row in _records()]
+
+
 def seed_demo(db: Database) -> None:
     """Index the prepared summaries with the same ingestion path as live articles."""
     for record in _records():

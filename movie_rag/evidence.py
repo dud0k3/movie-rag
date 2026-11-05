@@ -136,7 +136,8 @@ def evidence_context(
         (r"спорт|занимал.*до кино", "спорт спортсмен сборная соревнования прыжки diving national"),
         (r"замедл.*врем|врем.*медлен", "гравитация дыра гаргантюа gravity dilation"),
         (r"перв\w* рол|дебют|начал\w* карьер", "дебют режиссёр роль сыграл кастинг casting debut"),
-        (r"в итоге|выбрался|как закончил", "вышел выходит покинул сбежал проход дверь escape exit"),
+        (r"в итоге|выбрался|как закончил", "вышел выходит покинул сбежал проход дверь тоннель пролез escape exit"),
+        (r"прикры|замаскир|закрывал|скрывал", "скрыл прикрыл закрыл повесил замаскировал ход проход cover concealed"),
         (r"до кино|до кинокарьеры", "ранние годы спорт работа карьера early life"),
         (r"праздник|вечеринк|торжеств|день рождения", "вечеринка торжество праздник день рождения party birthday"),
     ):
@@ -146,6 +147,7 @@ def evidence_context(
     identity_match = re.match(r"кто\s+(?:такой|такая|это)\s+([\w-]+)", query, re.I)
     identity = _romanized(identity_match[1]) if identity_match else None
     resolution_intent = bool(re.search(r"выбрался|сбежал|спасся|как.*(?:кончил|уш[её]л)|чем закончил", query, re.I))
+    concealment_intent = bool(re.search(r"прикры|замаскир|закрывал|скрывал", query, re.I))
     occasion_intent = bool(re.search(r"праздник|вечеринк|торжеств|день рождения", query, re.I))
     decisive_event = bool(re.search(r"убил|убий|убива|зарезал|поножов|запах", query, re.I))
     identity_reveal = bool(re.search(r"(?:кем|кто).*на самом деле", query, re.I))
@@ -211,7 +213,7 @@ def evidence_context(
                 if re.search(rf"\b{re.escape(identity)}\b", role):
                     score += 14
             if resolution_intent and re.search(
-                r"выходит|выходил|вышел|открывает дверь|проход|сбежал|покинул|уплывает|плыв[её]т|escapes?|sails?|exits?", passage, re.I,
+                r"выходит|выходил|вышел|открывает дверь|проход|сбежал|покинул|уплывает|плыв[её]т|пролез|прополз|тоннел|туннел|escapes?|sails?|exits?", passage, re.I,
             ):
                 score += 8
                 # Anchor the decisive action, retaining the route to it.
@@ -219,6 +221,14 @@ def evidence_context(
                 while len(" ".join(neighbors)) > min(650, max_chars - 12) and len(neighbors) > 2:
                     neighbors = neighbors[1:]
                 passage = " ".join(neighbors)
+            if concealment_intent and re.search(
+                r"прикрыл|спрятал|скрыл|замаскировал|закрыл|повесил|cover(?:ed|s)|conceal", passage, re.I,
+            ):
+                nearby = " ".join(passages[max(0, index - 2):index + 2])
+                if re.search(r"\b(?:ход|проход|вход|про[её]м|тоннел\w*|туннел\w*|opening|tunnel)\b", nearby, re.I):
+                    score += 14
+                    # Put the sentence with the physical object first.
+                    passage = passage + (" " + passages[index + 1] if index + 1 < len(passages) else "")
             if decisive_event and re.search(
                 r"ударяет ножом|ударил ножом|закол|зареза|зажимает нос|зажал нос|stabs?|pinches his nose", passage, re.I,
             ):

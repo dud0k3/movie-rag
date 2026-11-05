@@ -7,6 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from datetime import date
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from urllib.parse import quote
 
@@ -18,7 +19,7 @@ from .config import Settings
 from .db import Database
 
 
-USER_AGENT = "MovieRAG-Educational/0.1 (local student project; contact via GitHub repository)"
+USER_AGENT = "MovieRAG-Educational/0.1 (https://github.com/dud0k3/movie-rag)"
 
 
 def mentioned_title(query: str) -> str | None:
@@ -137,6 +138,68 @@ class TMDb:
         return series
 
 
+@dataclass(frozen=True)
+class WikiArticle:
+    text: str
+    url: str
+    facts: dict
+
+
+def _wiki_text(tag) -> str:
+    return " ".join(re.sub(r"\[[^\]]{1,35}\]", "", tag.get_text(" ", strip=True)).split())
+
+
+def _article_facts(body) -> dict:
+    facts: dict = {"cast": []}
+    for row in body.select("table.infobox tr"):
+        cells = row.find_all(["th", "td"], recursive=False)
+        if len(cells) < 2:
+            continue
+        label = _wiki_text(cells[0]).casefold().replace("ё", "е").rstrip(":")
+        if label in {"режиссер", "режиссеры", "directed by"}:
+            facts["director"] = _wiki_text(cells[1])
+    for table in body.select("table.wikitable"):
+        rows = table.find_all("tr")
+        if not rows:
+            continue
+        headers = [_wiki_text(cell).casefold().replace("ё", "е")
+                   for cell in rows[0].find_all(["th", "td"], recursive=False)]
+        if len(headers) < 2 or not re.fullmatch(r"актер(?:ы)?|исполнитель|actor|cast member", headers[0]):
+            continue
+        if not re.match(r"роль|персонаж|role|character", headers[1]):
+            continue
+        for row in rows[1:]:
+            cells = row.find_all(["th", "td"], recursive=False)
+            if len(cells) < 2 or not row.find("td", recursive=False):
+                continue
+            actor = _wiki_text(cells[0])
+            role = _wiki_text(cells[1]).split(", ", 1)[0].rstrip(" ,")
+            if actor and role and not actor.isdigit() and len(actor) <= 90 and len(role) <= 100:
+                facts["cast"].append({"name": actor, "character": role})
+    for heading in body.find_all(["h2", "h3"]):
+        label = _wiki_text(heading).casefold().replace("ё", "е")
+        if label not in {"в ролях", "актерский состав", "актеры и персонажи", "cast"}:
+            continue
+        for node in heading.next_siblings:
+            if getattr(node, "name", None) in {"h2", "h3", "section"}:
+                break
+            if getattr(node, "name", None) not in {"ul", "ol"}:
+                continue
+            for line in node.find_all("li", recursive=False):
+                text = _wiki_text(line)
+                match = re.match(r"^(.{3,75}?)\s+(?:—|–|as|в роли)\s+([^:;]{2,95})", text, re.I)
+                if match:
+                    facts["cast"].append({"name": match[1], "character": match[2].split(", ", 1)[0]})
+    for para in body.find_all("p", limit=5):
+        for sentence in re.split(r"(?<=[.!?])\s+(?=[А-ЯЁA-Z])", _wiki_text(para)):
+            if re.search(r"наиболее извест|известен своими ролями|известна своими ролями|best known", sentence, re.I):
+                facts.setdefault("known_for", sentence[:700].rsplit(" ", 1)[0] + "…" if len(sentence) > 700 else sentence)
+            if re.match(r"(?:фильм|сериал|картина) (?:рассказывает|повествует)|действие разворачивается|"
+                        r"в центре сюжета|на протяжении .* показана история", sentence, re.I):
+                facts.setdefault("premise", sentence)
+    return facts
+
+
 class Wikipedia:
     def __init__(self, contact_url: str, language: str = "en"):
         if language not in {"en", "ru"}:
@@ -152,14 +215,39 @@ class Wikipedia:
         self._lock = Lock()
 
     def get(self, path: str, **params):
+        return self._request(self.base_url + path, **params)
+
+    def _request(self, url: str, **params):
         with self._lock:
             delay = 1.2 - (time.monotonic() - self.last_request)
             if delay > 0:
                 time.sleep(delay)
             try:
-                return self.session.get(self.base_url + path, params=params, timeout=(3, 6))
+                return self.session.get(url, params=params, timeout=(3, 6))
             finally:
                 self.last_request = time.monotonic()
+
+    def search_pages(self, query: str, limit: int = 16) -> list[dict]:
+        try:
+            response = self.get("search/page", q=query, limit=limit)
+            response.raise_for_status()
+            return response.json().get("pages", [])
+        except (requests.RequestException, ValueError) as exc:
+            raise SourceError("Поиск Wikipedia сейчас недоступен.") from exc
+
+    def translated_title(self, title: str, language: str) -> str | None:
+        if self.language == language:
+            return title
+        try:
+            response = self._request(
+                f"https://{self.language}.wikipedia.org/w/api.php", action="query", prop="langlinks",
+                titles=title, lllang=language, format="json", formatversion=2,
+            )
+            response.raise_for_status()
+            pages = response.json().get("query", {}).get("pages", [])
+            return next((link["title"] for page in pages for link in page.get("langlinks", [])), None)
+        except (requests.RequestException, ValueError, KeyError):
+            return None
 
     def search_title(self, name: str, kind: str, year: str = "") -> str | None:
         if self.language == "ru":
@@ -214,6 +302,10 @@ class Wikipedia:
         return ranked[0][1]
 
     def article(self, title: str) -> tuple[str, str] | None:
+        article = self.article_details(title)
+        return (article.text, article.url) if article else None
+
+    def article_details(self, title: str) -> WikiArticle | None:
         try:
             response = self.get(f"page/{quote(title, safe='')}/with_html")
             if response.status_code == 404:
@@ -224,6 +316,7 @@ class Wikipedia:
             return None
         soup = BeautifulSoup(data.get("html", ""), "html.parser")
         body = soup.select_one(".mw-parser-output") or soup
+        facts = _article_facts(body)
         # Wikipedia often stores episode synopses and cast lists in wikitable
         # markup. Preserve useful tables before removing layout/navigation tables.
         table_sections = []
@@ -252,7 +345,7 @@ class Wikipedia:
         sections = []
         for node in body.find_all(["h2", "h3", "p", "li"]):
             text = " ".join(node.get_text(" ", strip=True).split())
-            if len(text) < 35 and node.name not in {"h2", "h3"}:
+            if len(text) < 35 and node.name == "p":
                 continue
             if node.name in {"h2", "h3"}:
                 if text.lower() in {"references", "external links", "notes", "see also", "further reading",
@@ -265,7 +358,7 @@ class Wikipedia:
         if len(text) < 200:
             return None
         url = data.get("html_url") or f"https://{self.language}.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}"
-        return text[:45000], url
+        return WikiArticle(text[:45000], url, facts)
 
 
 def movie_document(movie: dict) -> str:

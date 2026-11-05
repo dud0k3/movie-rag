@@ -66,15 +66,20 @@ class Database:
         finally:
             connection.close()
 
-    def put_entity(self, kind: str, entity_id: str, name: str, payload: dict) -> None:
+    def put_entity(self, kind: str, entity_id: str, name: str, payload: dict, *, replace: bool = True) -> None:
         now = datetime.now(timezone.utc).isoformat()
+        conflict = ("DO UPDATE SET name=excluded.name, payload=excluded.payload, fetched_at=excluded.fetched_at"
+                    if replace else "DO NOTHING")
         with self.connect() as db:
             db.execute(
-                """INSERT INTO entities VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(entity_type, entity_id) DO UPDATE SET
-                  name=excluded.name, payload=excluded.payload, fetched_at=excluded.fetched_at""",
+                f"INSERT INTO entities VALUES (?, ?, ?, ?, ?) ON CONFLICT(entity_type, entity_id) {conflict}",
                 (kind, str(entity_id), name, json.dumps(payload, ensure_ascii=False), now),
             )
+
+    def entity_for_url(self, url: str) -> tuple[str, str] | None:
+        with self.connect() as db:
+            row = db.execute("SELECT entity_type, entity_id FROM documents WHERE url=?", (url,)).fetchone()
+        return tuple(row) if row else None
 
     def get_entity(self, kind: str, entity_id: str) -> dict | None:
         with self.connect() as db:
@@ -231,14 +236,15 @@ class Database:
         return {row["id"]: context_window(row["prev"] or "", row["text"], row["following"] or "")
                 for row in rows if row["prev"] or row["following"]}
 
-    def catalog_chunk(self, entity: tuple[str, str]) -> dict | None:
+    def catalog_chunk(self, entity: tuple[str, str], *, url: str | None = None) -> dict | None:
         with self.connect() as db:
             row = db.execute(
                 """SELECT c.id AS chunk_id, c.text, d.title, d.url, d.source, d.entity_type,
                           d.entity_id, d.published_at
                    FROM documents d JOIN chunks c ON c.document_id=d.id
-                   WHERE d.entity_type=? AND d.entity_id=? AND d.source='TMDB' AND c.position=0""",
-                entity,
+                   WHERE d.entity_type=? AND d.entity_id=? AND c.position=0
+                   AND ((? IS NULL AND d.source='TMDB') OR d.url=?)""",
+                (*entity, url, url),
             ).fetchone()
         return dict(row) if row else None
 

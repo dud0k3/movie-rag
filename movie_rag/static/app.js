@@ -1,4 +1,4 @@
-const state = { selected: null, results: [], visibleItems: [], filter: 'all', activeIndex: -1,
+const state = { selected: null, examples: [], results: [], visibleItems: [], filter: 'all', activeIndex: -1,
   loading: false, answerController: null, ready: false, searchTimer: null, searchController: null, searchSeq: 0,
   recent: (() => { try { return JSON.parse(localStorage.getItem('movie-rag-recent') || '[]'); } catch { return []; } })() };
 const $ = id => document.getElementById(id);
@@ -28,7 +28,7 @@ function closePicker() {
 function renderPicker() {
   const query = $('discover-input').value.trim();
   const recentMode = query.length < 2;
-  const items = recentMode ? state.recent : state.results;
+  const items = recentMode ? (state.recent.length ? state.recent : state.examples) : state.results;
   const filtered = state.filter === 'all' || recentMode ? items : items.filter(item => item.type === state.filter);
   state.visibleItems = filtered.slice(0, 8);
   const tabs = !recentMode && items.length ? `<div class="filter-row" aria-label="Тип результата">${[
@@ -44,7 +44,7 @@ function renderPicker() {
     const subtitle = [kindLabel(item.type), item.year].filter(Boolean).join(' · ');
     return `<button type="button" class="discovery-item ${state.activeIndex === index ? 'active' : ''}" id="option-${index}" role="option" aria-selected="${state.activeIndex === index}" data-index="${index}"><span class="poster">${image}</span><span class="result-copy"><strong>${name}</strong><small>${escapeHtml(subtitle)}</small></span><span class="item-arrow" aria-hidden="true">↗</span></button>`;
   }).join('')}</div>`;
-  $('discover-results').innerHTML = (recentMode && state.recent.length ? '<div class="picker-caption">Недавние</div>' : '') + tabs + body;
+  $('discover-results').innerHTML = (recentMode && items.length ? `<div class="picker-caption">${state.recent.length ? 'Недавние' : 'Примеры для начала'}</div>` : '') + tabs + body;
   $('discover-results').classList.remove('hidden');
   $('discover-input').setAttribute('aria-expanded', 'true');
   document.querySelectorAll('.discovery-item').forEach(button => button.addEventListener('click', () => select(state.visibleItems[Number(button.dataset.index)])));
@@ -288,7 +288,7 @@ $('discover-input').addEventListener('input', () => {
   state.results = [];
   state.loading = $('discover-input').value.trim().length >= 2;
   renderPicker();
-  state.searchTimer = window.setTimeout(discover, 260);
+  state.searchTimer = window.setTimeout(discover, 450);
 });
 $('discover-input').addEventListener('keydown', event => {
   if (event.key === 'Escape') { event.preventDefault(); closePicker(); return; }
@@ -321,13 +321,15 @@ async function waitForReady() {
     const data = await getJSON('/health');
     if (data.ready) {
       state.ready = true;
+      state.examples = data.starter || [];
+      if (document.activeElement === $('discover-input')) renderPicker();
       $('ask-button').disabled = false;
       if (!data.semantic_enabled) {
         const mode = $('search-mode');
         mode.value = 'bm25';
         for (const option of mode.options) option.disabled = option.value !== 'bm25';
       }
-      setStatus(data.demo_mode ? 'Демо готово. Начните с «Матрицы».' : 'Можно задавать вопросы.');
+      setStatus(data.demo_mode ? 'Локальный каталог готов.' : 'Введите название фильма или имя актёра.');
       return;
     }
   } catch {}

@@ -17,15 +17,17 @@ from .answer import PLOT_QUESTION, generate, stream_generate, warm_model
 from .config import settings
 from .credits import cast_credit, role_query
 from .db import Database
-from .demo_catalog import seed_demo
+from .demo_catalog import seed_demo, starter_cards
 from .evidence import question_parts
 from .search import SearchEngine
 from .sources import Ingestor, SourceError, mentioned_title, title_key
+from .wiki_catalog import WikiCatalog
 
 
 db = Database(settings.db_path)
 search_engine = SearchEngine(db, settings)
 ingestor = Ingestor(db, settings)
+wiki_catalog = WikiCatalog(db, ingestor.wiki_ru, ingestor.wiki)
 
 app = FastAPI(title="Movie RAG", version="0.1.0", description="Поиск и ответы о фильмах с источниками",
               docs_url=None, redoc_url=None)
@@ -37,9 +39,8 @@ _search_ready = Event()
 
 @app.on_event("startup")
 def preload_answer_model() -> None:
-    if settings.demo_mode:
+    if settings.demo_mode or settings.offline:
         seed_demo(db)
-        return
     Thread(target=warm_model, args=(settings,), daemon=True, name="qwen-warmup").start()
     if settings.semantic_enabled:
         Thread(target=preload_search_model, daemon=True, name="search-warmup").start()
@@ -102,15 +103,16 @@ def docs():
 
 
 def _effective_mode(mode: str) -> str:
-    return mode if settings.semantic_enabled else "bm25"
+    return mode if settings.semantic_enabled and _search_ready.is_set() else "bm25"
 
 
 @app.get("/health")
 def health():
     return {"ok": True, "tmdb_configured": settings.has_tmdb_auth,
             "database": db.stats(), "semantic_error": search_engine.semantic_error,
-            "demo_mode": settings.demo_mode, "semantic_enabled": settings.semantic_enabled,
-            "ready": not settings.semantic_enabled or _search_ready.is_set()}
+            "demo_mode": settings.offline, "semantic_enabled": settings.semantic_enabled,
+            "starter": starter_cards() if settings.demo_mode or settings.offline else [],
+            "ready": True}
 
 
 def _local_discover(q: str) -> list[dict]:
@@ -133,7 +135,7 @@ def _local_discover(q: str) -> list[dict]:
         results.append({
             "type": kind, "id": int(entity_id), "title": title,
             "original_title": item.get("original_title") or item.get("original_name") or title,
-            "year": (item.get("release_date") or item.get("first_air_date") or "")[:4],
+            "year": (item.get("release_date") or item.get("first_air_date") or item.get("year") or "")[:4],
             "summary": item.get("overview_ru") or item.get("overview") or "",
             "poster_path": item.get("poster_path") or item.get("profile_path"),
         })
@@ -144,42 +146,42 @@ def _local_discover(q: str) -> list[dict]:
 
 @app.get("/discover")
 def discover(q: str = Query(min_length=2, max_length=120)):
-    if settings.demo_mode:
-        return {"query": q, "results": _local_discover(q)}
+    local = _local_discover(q)
+    if settings.offline:
+        return {"query": q, "results": local}
+    query = mentioned_title(q) or q
+    if settings.has_tmdb_auth:
+        try:
+            if results := ingestor.tmdb.search(query):
+                return {"query": q, "results": results}
+        except SourceError:
+            log.info("TMDB unavailable; trying Wikipedia")
     try:
-        results = ingestor.tmdb.search(q) or _local_discover(q)
+        remote = wiki_catalog.discover(query)
     except SourceError as exc:
-        results = _local_discover(q)
-        if not results:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"query": q, "results": results}
+        return {"query": q, "results": local, "notice": str(exc)}
+    combined = {}
+    local_titles = [item for item in local if title_key(item["title"]).startswith(title_key(query))]
+    for item in [*remote, *(local_titles if remote else local)]:
+        combined.setdefault((item["type"], item["id"]), item)
+    return {"query": q, "results": list(combined.values())[:8]}
 
 
 @app.post("/ingest")
 def ingest(body: IngestRequest):
-    if settings.demo_mode:
-        item = db.get_entity(body.type, str(body.id))
-        if not item:
-            raise HTTPException(status_code=404, detail="Этого объекта нет в локальном каталоге. Для поиска новых объектов добавьте ключ TMDB.")
-        title = item.get("title_ru") or item.get("title") or item.get("name")
-        result = {"type": body.type, "id": body.id, "title": title, "cached": True}
-        if not body.refresh:
-            return result
-        article_title, url = item.get("demo_article"), item.get("demo_url")
-        if not article_title or not url:
-            raise HTTPException(status_code=400, detail="Без ключа TMDB можно обновлять статьи стартового каталога.")
-        article = ingestor.wiki_ru.article(article_title)
-        if not article:
-            raise HTTPException(status_code=503, detail="Не удалось загрузить статью Wikipedia. Локальные материалы доступны.")
-        text, _ = article
-        _, changed = db.put_document(
-            source="Wikipedia RU", source_id=article_title, entity_type=body.type,
-            entity_id=str(body.id), title=title, url=url, text=text,
-            published_at=item.get("release_date") or item.get("first_air_date"),
-        )
-        return {**result, "cached": False, "changed": changed}
+    item = db.get_entity(body.type, str(body.id))
+    if settings.offline:
+        if not item or not db.entity_chunk_ids(body.type, str(body.id)):
+            raise HTTPException(status_code=404, detail="Этого объекта нет в локальной базе.")
+        if body.refresh:
+            raise HTTPException(status_code=409, detail="Для обновления статьи отключите режим без интернета.")
+        return {"type": body.type, "id": body.id, "title": item.get("title") or item.get("name"), "cached": True}
     try:
+        if not settings.has_tmdb_auth or (item and item.get("wiki_page")):
+            return wiki_catalog.ingest(body.type, body.id, refresh=body.refresh)
         return ingestor.ingest(body.type, body.id, refresh=body.refresh)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=exc.args[0]) from exc
     except SourceError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -196,6 +198,52 @@ def search(
     hits = search_engine.search(q, limit=top_n, mode=effective, entity=entity)
     return {"query": q, "mode": effective, "results": hits,
             "semantic_error": search_engine.semantic_error}
+
+
+def _catalog_fact_hit(q: str, entity: tuple[str, str], item: dict) -> dict | None:
+    role = role_query(q)
+    facts = item.get("wiki_facts", {})
+    wiki_url = item.get("wiki_source_url")
+    if role:
+        credit = cast_credit(item, entity[0], role)
+        if credit and (hit := db.catalog_chunk(entity)):
+            actor, character = credit
+            hit.update(text=f"Персонаж: {character}. Исполнитель: {actor}.",
+                       catalog_answer=f"Эту роль исполняет {actor} [1].", score=1.0)
+            return hit
+        cast = facts.get("cast", [])
+        credit = cast_credit({"credits": {"cast": cast}}, "movie", role, fuzzy=True)
+        if not credit and wiki_url and not settings.offline and entity[0] in {"movie", "tv"}:
+            cast, extra_url = wiki_catalog.extra_cast(*entity)
+            credit = cast_credit({"credits": {"cast": cast}}, "movie", role, fuzzy=True)
+            if credit:
+                wiki_url = extra_url
+        if credit and wiki_url and (hit := db.catalog_chunk(entity, url=wiki_url)):
+            actor, character = credit
+            hit.update(text=f"Персонаж: {character}. Исполнитель: {actor}.",
+                       catalog_answer=f"Эту роль исполняет {actor} [1].", score=1.0)
+            return hit
+    if not wiki_url:
+        return None
+    parts = question_parts(q)
+    fact = None
+    evidence = None
+    if len(parts) == 1 and entity[0] == "movie" and re.match(r"^\s*кто (?:снял|режисс[её]р)\b", q, re.I):
+        if director := facts.get("director"):
+            fact = f"Режиссёр фильма — {director}."
+    if len(parts) == 1 and entity[0] in {"movie", "tv"} and re.match(r"^\s*о ч[её]м\b", q, re.I):
+        fact = facts.get("premise")
+    if entity[0] == "person" and re.match(r"^\s*чем .*извест", q, re.I) and all(
+        re.match(r"(?:чем .*извест|назови .*фильм)", part, re.I) for part in parts
+    ):
+        evidence = facts.get("known_for")
+        if evidence:
+            titles = list(dict.fromkeys(title.strip() for title in re.findall(r"«([^»]+)»", evidence)))[:5]
+            fact = "Среди известных работ — " + ", ".join(f"«{title}»" for title in titles) + "." if titles else evidence
+    if fact and (hit := db.catalog_chunk(entity, url=wiki_url)):
+        hit.update(text=evidence or fact, catalog_answer=f"{fact} [1]", score=1.0)
+        return hit
+    return None
 
 
 def _answer_hits(q: str, entity_type: str | None, entity_id: int | None, mode: str) -> list[dict]:
@@ -218,29 +266,18 @@ def _answer_hits(q: str, entity_type: str | None, entity_id: int | None, mode: s
         if len(exact) != 1:
             raise HTTPException(status_code=409, detail="Выберите точный фильм, сериал или человека в поиске.")
         entity = (exact[0]["type"], str(exact[0]["id"]))
-    if entity and not db.get_entity(*entity):
-        if settings.demo_mode:
-            raise HTTPException(status_code=404, detail="Этого объекта нет в локальном каталоге.")
-        try:
-            ingestor.ingest(entity[0], int(entity[1]))
-        except SourceError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not entity:
         entity = db.match_entity(q)
-    if not entity and settings.demo_mode:
+    if not entity and (settings.demo_mode or settings.offline):
         matches = _local_discover(q)
         if len(matches) == 1:
             entity = (matches[0]["type"], str(matches[0]["id"]))
     if not entity:
         raise HTTPException(status_code=409, detail="Выберите фильм, сериал или человека в поиске либо укажите точное название в кавычках.")
-    if role := role_query(q):
-        item = db.get_entity(*entity)
-        credit = cast_credit(item, entity[0], role) if item else None
-        if credit and (catalog := db.catalog_chunk(entity)):
-            actor, character = credit
-            catalog.update(text=f"Персонаж: {character}. Исполнитель: {actor}.",
-                           catalog_answer=f"Эту роль исполняет {actor} [1].", score=1.0)
-            return [catalog]
+    if not db.entity_chunk_ids(*entity):
+        ingest(IngestRequest(type=entity[0], id=int(entity[1])))
+    if (item := db.get_entity(*entity)) and (fact_hit := _catalog_fact_hit(q, entity, item)):
+        return [fact_hit]
     hits = search_engine.search(q, limit=24, mode=mode, entity=entity)
     parts = question_parts(q)[:3]
     if len(parts) == 1:
@@ -282,7 +319,7 @@ def ask(
     mode = _effective_mode(mode)
     hits = _answer_hits(q, entity_type, entity_id, mode)
     scorer = search_engine.score_passages if mode != "bm25" else None
-    answer, answer_mode = generate(q, hits, settings, scorer, use_model=not settings.demo_mode)
+    answer, answer_mode = generate(q, hits, settings, scorer)
     sources = _answer_sources(hits)
     return {"query": q, "answer": answer, "answer_mode": answer_mode,
             "sources": sources, "semantic_error": search_engine.semantic_error}
@@ -302,7 +339,7 @@ def ask_stream(
         yield json.dumps({"type": "sources", "sources": _answer_sources(hits),
                           "semantic_error": search_engine.semantic_error}, ensure_ascii=False) + "\n"
         scorer = search_engine.score_passages if mode != "bm25" else None
-        for event in stream_generate(q, hits, settings, scorer, use_model=not settings.demo_mode):
+        for event in stream_generate(q, hits, settings, scorer):
             yield json.dumps(event, ensure_ascii=False) + "\n"
 
     return StreamingResponse(events(), media_type="application/x-ndjson")

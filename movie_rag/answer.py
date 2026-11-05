@@ -12,7 +12,7 @@ from time import monotonic
 import httpx
 
 from .config import Settings
-from .evidence import planned_context, question_parts
+from .evidence import planned_context, question_parts, split_passages
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ STOPWORDS = {
 MARATIK = re.compile(r"\b(?:маратик\w*|maratik\w*)\b", re.IGNORECASE)
 PLOT_QUESTION = re.compile(
     r"сюжет|почему|зачем|что (?:произошло|случилось|стало|означает)|значени\w*|символиз|смысл|"
-    r"концовк|финал|чем законч|умер|погиб|убил|спрыг|персонаж|героин|геро[йя]|"
+    r"концовк|финал|выбрался|сбежал|чем законч|умер|погиб|убил|спрыг|персонаж|героин|геро[йя]|"
     r"объясня|замедлен\w*\s+времен|времен\w*\s+замедлен|"
     r"кто\s+(?:такой|такая|такое|это)|кем\s+(?:является|приходится)",
     re.IGNORECASE,
@@ -471,7 +471,7 @@ def extractive_answer(query: str, hits: list[dict]) -> str:
                 score -= 8
             sentences.append((score, sentence, source_number))
     if not sentences:
-        return "В русскоязычных материалах пока нет ответа на этот вопрос. Попробуйте выбрать другой фильм или дождаться загрузки модели Qwen."
+        return "В русскоязычных материалах пока нет ответа на этот вопрос."
     seen = set()
     selected = []
     for _, sentence, number in sorted(sentences, reverse=True):
@@ -487,6 +487,17 @@ def extractive_answer(query: str, hits: list[dict]) -> str:
 
 def grounded_fallback(query: str, hits: list[dict]) -> str:
     """Use plot evidence as the fallback so model failures cannot derail the answer."""
+    if PLOT_QUESTION.search(query) and len(question_parts(query)) > 1:
+        context = planned_context(query, hits, max_chars=1700)
+        excerpts = []
+        for block in re.split(r"Материалы к вопросу \d+:\n", context):
+            match = re.search(r"^\[(\d+)\] (.+)", block, re.M)
+            if match and len(re.findall(r"[А-Яа-яЁё]", match[2])) >= 15:
+                excerpt = re.sub(r"## (?:Сюжет|Plot|Биография)\s+", "", match[2], flags=re.I)
+                first = next(iter(split_passages(excerpt)), excerpt)
+                excerpts.append(f"{first} [{match[1]}]")
+        if excerpts:
+            return "\n\n".join(excerpts)
     if PLOT_QUESTION.search(query):
         numbered_hits = list(enumerate(hits, start=1))
         wiki_hits = [(number, hit) for number, hit in numbered_hits if hit.get("source") == "Wikipedia RU"][:6]
@@ -571,7 +582,7 @@ def _model_request(query: str, hits: list[dict], config: Settings, passage_score
         "Дай конкретный ответ без вступления и повторов. Учитывай все части вопроса. "
         "Если источник называет героя по фамилии, сохрани её, пока полное имя не подтверждено. "
         "Не переноси поступок на другого героя. Не добавляй событий вне вопроса. "
-        "Если ответа нет, напиши: В найденных источниках ответа нет. "
+        "Если деталь не подтверждена, скажи об этом. Если ответа нет, напиши: В найденных источниках ответа нет. "
         + shape
     )
     return ({
